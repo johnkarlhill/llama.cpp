@@ -229,8 +229,8 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         cont_to_f16_sycl<sycl::half>((const char *) V->data, Vf_pool->get(), d, seq, Hkv, mb, V->nb[1], V->nb[2], V->nb[3], stream);
         K_ptr = Kf_pool->get();
         V_ptr = Vf_pool->get();
-    } else {
-        // Dequant K to dense F16.
+    } else if (ggml_is_quantized(K->type)) {
+        // Quantized K/V: dequant to dense F16.
         {
             const char * K_data = (const char *)K->data;
             const bool k_non_dense = ((int64_t)K->ne[1] * K->nb[1] != K->nb[2]) && K->ne[2] > 1;
@@ -238,24 +238,7 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
                 ((int64_t)K->nb[2] < (int64_t)K->ne[1] * (int64_t)K->nb[1]);
             K_f16.alloc(ggml_nelements(K));
             K_ptr = K_f16.ptr;
-            if (K->type == GGML_TYPE_F16) {
-                if (!k_non_dense) {
-                    stream->memcpy(K_ptr, K_data, ggml_nelements(K) * sizeof(sycl::half));
-                } else {
-                    const int64_t ne0 = K->ne[0], ne1 = K->ne[1];
-                    const int64_t ne23 = (int64_t)K->ne[2] * K->ne[3];
-                    const int64_t src_nb1 = (int64_t)K->nb[1], src_nb2 = (int64_t)K->nb[2];
-                    const sycl::half * src = (const sycl::half *)K_data;
-                    stream->parallel_for(
-                        sycl::range<3>((size_t)ne23, (size_t)ne1, (size_t)ne0),
-                        [=](sycl::item<3> it) {
-                            int64_t hb = it.get_id(0), r = it.get_id(1), c = it.get_id(2);
-                            const sycl::half * src_row = (const sycl::half *)(
-                                (const char *)src + hb * src_nb2 + r * src_nb1);
-                            K_ptr[(hb * ne1 + r) * ne0 + c] = src_row[c];
-                        });
-                }
-            } else if (ggml_is_contiguously_allocated(K) && !k_non_dense) {
+            if (ggml_is_contiguously_allocated(K) && !k_non_dense) {
                 to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(K->type, dst);
                 to_fp16(K_data, K_ptr, ggml_nelements(K), stream);
             } else {
@@ -278,7 +261,7 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
                         s01, s02, s03, stream);
             }
         }
-        // Dequant V to dense F16.
+        // Quantized V.
         V_is_K_view = (K->type != GGML_TYPE_F32 && V->type != GGML_TYPE_F32 &&
                         K->data == V->data);
         if (V_is_K_view) {
@@ -290,24 +273,7 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
                 ((int64_t)V->nb[2] < (int64_t)V->ne[1] * (int64_t)V->nb[1]);
             V_f16.alloc(ggml_nelements(V));
             V_ptr = V_f16.ptr;
-            if (V->type == GGML_TYPE_F16) {
-                if (!v_non_dense) {
-                    stream->memcpy(V_ptr, V_data, ggml_nelements(V) * sizeof(sycl::half));
-                } else {
-                    const int64_t ne0 = V->ne[0], ne1 = V->ne[1];
-                    const int64_t ne23 = (int64_t)V->ne[2] * V->ne[3];
-                    const int64_t src_nb1 = (int64_t)V->nb[1], src_nb2 = (int64_t)V->nb[2];
-                    const sycl::half * src = (const sycl::half *)V_data;
-                    stream->parallel_for(
-                        sycl::range<3>((size_t)ne23, (size_t)ne1, (size_t)ne0),
-                        [=](sycl::item<3> it) {
-                            int64_t hb = it.get_id(0), r = it.get_id(1), c = it.get_id(2);
-                            const sycl::half * src_row = (const sycl::half *)(
-                                (const char *)src + hb * src_nb2 + r * src_nb1);
-                            V_ptr[(hb * ne1 + r) * ne0 + c] = src_row[c];
-                        });
-                }
-            } else if (ggml_is_contiguously_allocated(V) && !v_non_dense) {
+            if (ggml_is_contiguously_allocated(V) && !v_non_dense) {
                 to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(V->type, dst);
                 to_fp16(V_data, V_ptr, ggml_nelements(V), stream);
             } else {
@@ -328,6 +294,32 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
                 to_fp16(V_data, V_ptr,
                         V->ne[0], V->ne[1], V->ne[2], V->ne[3],
                         s01, s02, s03, stream);
+            }
+        }
+    } else {
+        // F32/BF16: convert to dense F16.
+        // F32 uses cont_to_f16_sycl<float>; BF16 goes through to_fp16_sycl.
+        K_f16.alloc(ggml_nelements(K));
+        K_ptr = K_f16.ptr;
+        if (K->type == GGML_TYPE_F32) {
+            cont_to_f16_sycl<float>((const char *) K->data, K_f16.ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
+                                    K->nb[1], K->nb[2], K->nb[3], stream);
+        } else {
+            to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(K->type, dst);
+            to_fp16((const char *) K->data, K_f16.ptr, ggml_nelements(K), stream);
+        }
+        V_is_K_view = (K->data == V->data);
+        if (V_is_K_view) {
+            V_ptr = K_ptr;
+        } else {
+            V_f16.alloc(ggml_nelements(V));
+            V_ptr = V_f16.ptr;
+            if (V->type == GGML_TYPE_F32) {
+                cont_to_f16_sycl<float>((const char *) V->data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
+                                        V->nb[1], V->nb[2], V->nb[3], stream);
+            } else {
+                to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(V->type, dst);
+                to_fp16((const char *) V->data, V_f16.ptr, ggml_nelements(V), stream);
             }
         }
     }
