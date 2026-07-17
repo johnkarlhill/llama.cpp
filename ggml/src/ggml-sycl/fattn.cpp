@@ -19,7 +19,6 @@
 #include "fattn-vec.hpp"
 #include "fattn.hpp"
 #include "fattn-onednn.hpp"
-#include "fattn-hybrid.hpp"
 
 
 #define FATTN_VEC_CASE(D, type_K, type_V)                                                                        \
@@ -100,7 +99,6 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_ONEDNN   = 150, // oneDNN SDPA: native F16 (PR #25222)
     BEST_FATTN_KERNEL_TILE     = 200,
-    BEST_FATTN_KERNEL_HYBRID   = 250, // dequant + oneDNN SDPA (frankenmerge)
 };
 
 
@@ -132,17 +130,13 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
     // XMX-accelerated paths (prefill only, Q >= 32).
-    // Dispatch order: native-F16 oneDNN SDPA → hybrid dequant+SDPA → TILE/VEC.
+    // XMX-accelerated path: oneDNN SDPA (native F16 and dequant+non-F16).
 
     // Path 1: oneDNN SDPA for native F16 KV (from PR #25222).
     if (ggml_sycl_flash_attn_ext_onednn_supported(dst)) {
         return BEST_FATTN_KERNEL_ONEDNN;
     }
 
-    // Path 2: Hybrid — dequantize K/V to F16, then oneDNN SDPA.
-    if (ggml_sycl_flash_attn_ext_hybrid_supported(dst)) {
-        return BEST_FATTN_KERNEL_HYBRID;
-    }
 
     for (const ggml_tensor * t : {Q, K, V, mask}) {
         if (t == nullptr || ggml_is_quantized(t->type)) {
@@ -289,9 +283,6 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             ggml_sycl_flash_attn_ext_vec(ctx, dst);
             break;
 #if GGML_SYCL_DNNL
-        case BEST_FATTN_KERNEL_HYBRID:
-            ggml_sycl_flash_attn_ext_hybrid(ctx, dst);
-            break;
 #endif
     }
 

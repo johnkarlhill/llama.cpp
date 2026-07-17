@@ -7,6 +7,8 @@
 
 #include "fattn-onednn.hpp"
 #include "fattn-tile.hpp"
+#include "convert.hpp"
+#include "fattn-buffers.hpp"
 
 // set minimum query length to treat as prefill (32)
 #define GGML_SYCL_FA_ONEDNN_MIN_Q 32
@@ -33,10 +35,17 @@ bool ggml_sycl_flash_attn_ext_onednn_supported(const ggml_tensor * dst) {
     const ggml_tensor * mask  = dst->src[3];
     const ggml_tensor * sinks = dst->src[4];
 
-    // gate for f16 KV only for now
-    // need to implement quantized KV
+    // F16 KV: native SDPA at any KV length.
+    // Non-F16 KV: dequant + SDPA at prefill lengths (K >= 1024, Q >= 32).
     if (K->type != GGML_TYPE_F16 || V->type != GGML_TYPE_F16) {
-        return false;
+        if (Q->ne[1] < 32 || K->ne[1] < 1024) {
+            return false;
+        }
+        for (const ggml_tensor * t : {K, V}) {
+            if (t->type == GGML_TYPE_F16 && t->nb[1] % (t->ne[0] * 2) != 0) {
+                return false;
+            }
+        }
     }
     // gate for the following cases
     // 1. if the oneDNN graph Add node has no input --> skip
@@ -199,13 +208,128 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     dnnl::engine    eng    = ctx.engine_dnnl(stream);
     dnnl::stream    strm   = ctx.stream_dnnl(stream);
 
-    // cont/cast inputs to contiguous f16 (head-major) -- the layout the fast systolic path wants.
-    ggml_sycl_pool_alloc<sycl::half> Qf(ctx.pool(), (size_t) H   * q   * d);
-    ggml_sycl_pool_alloc<sycl::half> Kf(ctx.pool(), (size_t) Hkv * seq * d);
-    ggml_sycl_pool_alloc<sycl::half> Vf(ctx.pool(), (size_t) Hkv * seq * d);
-    cont_to_f16_sycl<float>     ((const char *) Q->data, Qf.get(), d, q,   H,   mb, Q->nb[1], Q->nb[2], Q->nb[3], stream);
-    cont_to_f16_sycl<sycl::half>((const char *) K->data, Kf.get(), d, seq, Hkv, mb, K->nb[1], K->nb[2], K->nb[3], stream);
-    cont_to_f16_sycl<sycl::half>((const char *) V->data, Vf.get(), d, seq, Hkv, mb, V->nb[1], V->nb[2], V->nb[3], stream);
+    // Q: always f32 -- copy to dense f16.
+    ggml_sycl_pool_alloc<sycl::half> Qf(ctx.pool(), (size_t) H * q * d);
+    cont_to_f16_sycl<float>((const char *) Q->data, Qf.get(), d, q, H, mb, Q->nb[1], Q->nb[2], Q->nb[3], stream);
+
+    // K/V: F16 -> cont_to_f16 (pool-alloc); otherwise dequant (fattn-buffers).
+    sycl::half * K_ptr = nullptr;
+    sycl::half * V_ptr = nullptr;
+    ggml_sycl_pool_alloc<sycl::half> Kf_pool;
+    ggml_sycl_pool_alloc<sycl::half> Vf_pool;
+    ggml_sycl_fattn_alloc K_f16(ctx.fattn_buffers().K);
+    ggml_sycl_fattn_alloc V_f16(ctx.fattn_buffers().V);
+    bool V_is_K_view = false;
+
+    if (K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16) {
+        Kf_pool = ggml_sycl_pool_alloc<sycl::half>(ctx.pool(), (size_t) Hkv * seq * d);
+        Vf_pool = ggml_sycl_pool_alloc<sycl::half>(ctx.pool(), (size_t) Hkv * seq * d);
+        cont_to_f16_sycl<sycl::half>((const char *) K->data, Kf_pool.get(), d, seq, Hkv, mb, K->nb[1], K->nb[2], K->nb[3], stream);
+        cont_to_f16_sycl<sycl::half>((const char *) V->data, Vf_pool.get(), d, seq, Hkv, mb, V->nb[1], V->nb[2], V->nb[3], stream);
+        K_ptr = Kf_pool.get();
+        V_ptr = Vf_pool.get();
+    } else {
+        // Dequant K to dense F16.
+        {
+            const char * K_data = (const char *)K->data;
+            const bool k_non_dense = ((int64_t)K->ne[1] * K->nb[1] != K->nb[2]) && K->ne[2] > 1;
+            const bool k_gemma = k_non_dense &&
+                ((int64_t)K->nb[2] < (int64_t)K->ne[1] * (int64_t)K->nb[1]);
+            K_f16.alloc(ggml_nelements(K));
+            K_ptr = K_f16.ptr;
+            if (K->type == GGML_TYPE_F16) {
+                if (!k_non_dense) {
+                    stream->memcpy(K_ptr, K_data, ggml_nelements(K) * sizeof(sycl::half));
+                } else {
+                    const int64_t ne0 = K->ne[0], ne1 = K->ne[1];
+                    const int64_t ne23 = (int64_t)K->ne[2] * K->ne[3];
+                    const int64_t src_nb1 = (int64_t)K->nb[1], src_nb2 = (int64_t)K->nb[2];
+                    const sycl::half * src = (const sycl::half *)K_data;
+                    stream->parallel_for(
+                        sycl::range<3>((size_t)ne23, (size_t)ne1, (size_t)ne0),
+                        [=](sycl::item<3> it) {
+                            int64_t hb = it.get_id(0), r = it.get_id(1), c = it.get_id(2);
+                            const sycl::half * src_row = (const sycl::half *)(
+                                (const char *)src + hb * src_nb2 + r * src_nb1);
+                            K_ptr[(hb * ne1 + r) * ne0 + c] = src_row[c];
+                        });
+                }
+            } else if (ggml_is_contiguously_allocated(K) && !k_non_dense) {
+                to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(K->type, dst);
+                to_fp16(K_data, K_ptr, ggml_nelements(K), stream);
+            } else {
+                const size_t bs = ggml_blck_size(K->type);
+                const size_t ts = ggml_type_size(K->type);
+                to_fp16_nc_sycl_t to_fp16 = ggml_get_to_fp16_nc_sycl(K->type);
+                int64_t s01, s02, s03;
+                if (k_gemma) {
+                    const int64_t blk_per_row = (int64_t)K->ne[0] / bs;
+                    s01 = (int64_t)Hkv * blk_per_row;
+                    s02 = blk_per_row;
+                    s03 = (int64_t)K->ne[1] * s01;
+                } else {
+                    s01 = (int64_t)K->nb[1] / ts;
+                    s02 = (int64_t)K->nb[2] / ts;
+                    s03 = (int64_t)K->nb[3] / ts;
+                }
+                to_fp16(K_data, K_ptr,
+                        K->ne[0], K->ne[1], K->ne[2], K->ne[3],
+                        s01, s02, s03, stream);
+            }
+        }
+        // Dequant V to dense F16.
+        V_is_K_view = (K->type != GGML_TYPE_F32 && V->type != GGML_TYPE_F32 &&
+                        K->data == V->data);
+        if (V_is_K_view) {
+            V_ptr = K_ptr;
+        } else {
+            const char * V_data = (const char *)V->data;
+            const bool v_non_dense = ((int64_t)V->ne[1] * V->nb[1] != V->nb[2]) && V->ne[2] > 1;
+            const bool v_gemma = v_non_dense &&
+                ((int64_t)V->nb[2] < (int64_t)V->ne[1] * (int64_t)V->nb[1]);
+            V_f16.alloc(ggml_nelements(V));
+            V_ptr = V_f16.ptr;
+            if (V->type == GGML_TYPE_F16) {
+                if (!v_non_dense) {
+                    stream->memcpy(V_ptr, V_data, ggml_nelements(V) * sizeof(sycl::half));
+                } else {
+                    const int64_t ne0 = V->ne[0], ne1 = V->ne[1];
+                    const int64_t ne23 = (int64_t)V->ne[2] * V->ne[3];
+                    const int64_t src_nb1 = (int64_t)V->nb[1], src_nb2 = (int64_t)V->nb[2];
+                    const sycl::half * src = (const sycl::half *)V_data;
+                    stream->parallel_for(
+                        sycl::range<3>((size_t)ne23, (size_t)ne1, (size_t)ne0),
+                        [=](sycl::item<3> it) {
+                            int64_t hb = it.get_id(0), r = it.get_id(1), c = it.get_id(2);
+                            const sycl::half * src_row = (const sycl::half *)(
+                                (const char *)src + hb * src_nb2 + r * src_nb1);
+                            V_ptr[(hb * ne1 + r) * ne0 + c] = src_row[c];
+                        });
+                }
+            } else if (ggml_is_contiguously_allocated(V) && !v_non_dense) {
+                to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(V->type, dst);
+                to_fp16(V_data, V_ptr, ggml_nelements(V), stream);
+            } else {
+                const size_t bs = ggml_blck_size(V->type);
+                const size_t ts = ggml_type_size(V->type);
+                to_fp16_nc_sycl_t to_fp16 = ggml_get_to_fp16_nc_sycl(V->type);
+                int64_t s01, s02, s03;
+                if (v_gemma) {
+                    const int64_t blk_per_row = (int64_t)V->ne[0] / bs;
+                    s01 = (int64_t)V->ne[2] * blk_per_row;
+                    s02 = blk_per_row;
+                    s03 = (int64_t)V->ne[1] * s01;
+                } else {
+                    s01 = (int64_t)V->nb[1] / ts;
+                    s02 = (int64_t)V->nb[2] / ts;
+                    s03 = (int64_t)V->nb[3] / ts;
+                }
+                to_fp16(V_data, V_ptr,
+                        V->ne[0], V->ne[1], V->ne[2], V->ne[3],
+                        s01, s02, s03, stream);
+            }
+        }
+    }
 
     // divide-by-(1/scale) reproduces ggml's score *= kq_scale on the proven probe graph.
     const sycl::half scale_h = (sycl::half) (1.0f / kq_scale);
@@ -230,8 +354,8 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
 
     auto id2ptr = [&](size_t r) -> void * {
         if (r == E.id_q)     return Qf.get();
-        if (r == E.id_k)     return Kf.get();
-        if (r == E.id_v)     return Vf.get();
+        if (r == E.id_k)     return K_ptr;
+        if (r == E.id_v)     return V_ptr;
         if (r == E.id_scale) return scbuf.get();
         if (r == E.id_mask)  return (void *) mask->data;
         return nullptr;
