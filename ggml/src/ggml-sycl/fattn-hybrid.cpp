@@ -107,6 +107,64 @@ bool ggml_sycl_flash_attn_ext_hybrid_supported(const ggml_tensor * dst) {
 using namespace dnnl;
 using namespace dnnl::graph;
 
+// Build + compile the contiguous-input GQA SDPA graph.
+sdpa_partition build_sdpa(const engine & eng, int H, int Hkv, int q, int seq, int d) {
+    using ltype = logical_tensor::layout_type;
+    using dt    = logical_tensor::data_type;
+    using ldims = logical_tensor::dims;
+    const dt    fi = dt::f32, t = dt::f16;
+    const int   rep = H / Hkv;
+    const ldims q_sz = {1, Hkv, rep, q, d}, kv_sz = {1, Hkv, 1, seq, d}, s_sz = {1, Hkv, rep, q, seq},
+                sc = {1, 1, 1, 1, 1}, msk = {1, 1, 1, q, seq}, o_sz = {1, Hkv, rep, q, d};
+    int64_t        id = 0;
+    sdpa_partition E;
+
+    auto query  = logical_tensor(id++, t,  q_sz, ltype::strided);
+    auto key    = logical_tensor(id++, t,  kv_sz, ltype::strided);
+    auto score  = logical_tensor(id++, fi, s_sz, ltype::strided);
+    auto bmm1   = op(id++, op::kind::MatMul, "bmm1");
+    bmm1.set_attr<bool>(op::attr::transpose_b, true);
+    bmm1.add_inputs({query, key}); bmm1.add_outputs({score});
+
+    auto scale  = logical_tensor(id++, t,  sc,   ltype::strided);
+    auto scaled = logical_tensor(id++, fi, s_sz, ltype::strided);
+    auto sdiv   = op(id++, op::kind::Divide, "scale_div");
+    sdiv.add_inputs({score, scale}); sdiv.add_outputs({scaled});
+
+    auto mask   = logical_tensor(id++, t,  msk,  ltype::strided);
+    auto masked = logical_tensor(id++, fi, s_sz, ltype::strided);
+    auto madd   = op(id++, op::kind::Add, "mask_add");
+    madd.add_inputs({scaled, mask}); madd.add_outputs({masked});
+
+    auto probs  = logical_tensor(id++, t,  s_sz, ltype::strided);
+    auto smax   = op(id++, op::kind::SoftMax, "softmax");
+    smax.set_attr<int64_t>(op::attr::axis, -1);
+    smax.set_attr<std::string>(op::attr::mode, "inf_as_zero");
+    smax.add_inputs({masked}); smax.add_outputs({probs});
+
+    auto value  = logical_tensor(id++, t,  kv_sz, ltype::strided);
+    auto output = logical_tensor(id++, t,  o_sz, ltype::strided);
+    auto bmm2   = op(id++, op::kind::MatMul, "bmm2");
+    bmm2.add_inputs({probs, value}); bmm2.add_outputs({output});
+
+    dnnl::graph::graph g(eng.get_kind());
+    g.add_op(bmm1); g.add_op(sdiv); g.add_op(madd); g.add_op(smax); g.add_op(bmm2);
+    g.finalize();
+
+    auto parts = g.get_partitions();
+    if (parts.size() != 1 || !parts[0].is_supported()) {
+        return E;
+    }
+    E.ins      = parts[0].get_input_ports();
+    E.out      = parts[0].get_output_ports()[0];
+    E.cp       = parts[0].compile(E.ins, {E.out}, eng);
+    E.out      = E.cp.query_logical_tensor(E.out.get_id());
+    E.id_q     = query.get_id(); E.id_k = key.get_id(); E.id_v = value.get_id();
+    E.id_scale = scale.get_id(); E.id_mask = mask.get_id();
+    E.ok       = true;
+    return E;
+}
+
 void ggml_sycl_flash_attn_ext_hybrid(ggml_backend_sycl_context & ctx, ggml_tensor * dst) try {
 
     const ggml_tensor * Q    = dst->src[0];

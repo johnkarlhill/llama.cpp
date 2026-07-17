@@ -289,9 +289,6 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             ggml_sycl_flash_attn_ext_vec(ctx, dst);
             break;
 #if GGML_SYCL_DNNL
-        case BEST_FATTN_KERNEL_ONEDNN:
-            ggml_sycl_flash_attn_ext_onednn(ctx, dst);
-            break;
         case BEST_FATTN_KERNEL_HYBRID:
             ggml_sycl_flash_attn_ext_hybrid(ctx, dst);
             break;
