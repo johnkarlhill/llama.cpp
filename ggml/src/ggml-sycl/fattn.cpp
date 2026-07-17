@@ -285,8 +285,6 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
         case BEST_FATTN_KERNEL_VEC:
             ggml_sycl_flash_attn_ext_vec(ctx, dst);
             break;
-#if GGML_SYCL_DNNL
-#endif
     }
 
 }
