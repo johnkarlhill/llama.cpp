@@ -21,7 +21,6 @@
 
 #include "fattn-hybrid.hpp"
 #include "fattn-onednn.hpp"
-#include "fattn.hpp"         // for fallback: ggml_sycl_flash_attn_ext_mkl
 #include "fattn-tile.hpp"
 #include "convert.hpp"
 #include "fattn-buffers.hpp"
@@ -56,7 +55,7 @@ bool ggml_sycl_flash_attn_ext_hybrid_supported(const ggml_tensor * dst) {
         return false;
     }
 
-    // MKL prefill gate conditions
+    // Prefill gate conditions
     if (Q->ne[1] < 32 || K->ne[1] < 1024) {
         return false;
     }
@@ -70,7 +69,7 @@ bool ggml_sycl_flash_attn_ext_hybrid_supported(const ggml_tensor * dst) {
         return false;
     }
 
-    // F16 stride alignment (from MKL gate)
+    // F16 stride alignment 
     for (const ggml_tensor * t : {K, V}) {
         if (t->type == GGML_TYPE_F16 && t->nb[1] % (t->ne[0] * 2) != 0) {
             return false;
@@ -290,8 +289,8 @@ void ggml_sycl_flash_attn_ext_hybrid(ggml_backend_sycl_context & ctx, ggml_tenso
     }
     sdpa_partition & E = it->second;
     if (!E.ok) {
-        // Partition failed — fall back to MKL
-        ggml_sycl_flash_attn_ext_mkl(ctx, dst);
+        // Partition failed — fall back to TILE
+        ggml_sycl_flash_attn_ext_tile(ctx, dst);
         return;
     }
 
@@ -335,15 +334,15 @@ void ggml_sycl_flash_attn_ext_hybrid(ggml_backend_sycl_context & ctx, ggml_tenso
     stream->wait();
 }
 catch (const std::exception & e) {
-    GGML_LOG_WARN("%s: hybrid SDPA failed (%s); falling back to MKL\n", __func__, e.what());
-    ggml_sycl_flash_attn_ext_mkl(ctx, dst);
+    GGML_LOG_WARN("%s: hybrid SDPA failed (%s); falling back to TILE\n", __func__, e.what());
+    ggml_sycl_flash_attn_ext_tile(ctx, dst);
 }
 
 #else  // !GGML_SYCL_DNNL
 
 void ggml_sycl_flash_attn_ext_hybrid(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
-    // oneDNN not compiled — fall back to MKL
-    ggml_sycl_flash_attn_ext_mkl(ctx, dst);
+    // oneDNN not compiled — fall back to TILE
+    ggml_sycl_flash_attn_ext_tile(ctx, dst);
 }
 
 #endif // GGML_SYCL_DNNL

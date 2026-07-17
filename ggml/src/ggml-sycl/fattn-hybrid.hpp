@@ -20,7 +20,7 @@
 bool ggml_sycl_flash_attn_ext_hybrid_supported(const ggml_tensor * dst);
 
 // Run FA: dequant K/V → oneDNN SDPA → permute to ggml dst.
-// Falls back to MKL GEMM on failure.
+// Falls back to TILE on failure.
 void ggml_sycl_flash_attn_ext_hybrid(ggml_backend_sycl_context & ctx, ggml_tensor * dst);
 
 #endif // GGML_SYCL_FATTN_HYBRID_HPP

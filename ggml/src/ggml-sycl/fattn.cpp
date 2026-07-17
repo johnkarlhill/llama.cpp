@@ -101,7 +101,6 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_ONEDNN   = 150, // oneDNN SDPA: native F16 (PR #25222)
     BEST_FATTN_KERNEL_TILE     = 200,
     BEST_FATTN_KERNEL_HYBRID   = 250, // dequant + oneDNN SDPA (frankenmerge)
-    BEST_FATTN_KERNEL_MKL      = 300,
 };
 
 
@@ -132,18 +131,8 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
 
     bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
-    // MKL path: XMX-accelerated GEMM for prompt processing (all KV cache types).
-    // The MKL kernel converts non-F16 K/V to F16 via to_fp16_sycl before GEMM,
-    // so quantized, F16, BF16, and F32 caches all benefit from XMX acceleration.
-    // Activates automatically when flash-attn is enabled (--flash-attn on or -fa)
-    // and n_kv >= 1024. Falls through to TILE/VEC for ALiBi, logit softcap,
-    // and mismatched batch dimensions (unsupported by the MKL kernel).
-    // Set GGML_SYCL_ENABLE_MKL_FA=0 to force TILE/VEC path for A/B testing.
-    // Example: GGML_SYCL_ENABLE_MKL_FA=0 llama-cli -m model.gguf -fa -ngl 99 ...
-    // Note: MKL GEMM calls are incompatible with SYCL graph capture replay.
-
     // XMX-accelerated paths (prefill only, Q >= 32).
-    // Dispatch order: native-F16 oneDNN SDPA → hybrid dequant+SDPA → MKL GEMM.
+    // Dispatch order: native-F16 oneDNN SDPA → hybrid dequant+SDPA → TILE/VEC.
 
     // Path 1: oneDNN SDPA for native F16 KV (from PR #25222).
     if (ggml_sycl_flash_attn_ext_onednn_supported(dst)) {
@@ -153,28 +142,6 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
     // Path 2: Hybrid — dequantize K/V to F16, then oneDNN SDPA.
     if (ggml_sycl_flash_attn_ext_hybrid_supported(dst)) {
         return BEST_FATTN_KERNEL_HYBRID;
-    }
-
-    // Path 3: MKL GEMM — handles SDPA-incompatible shapes (no mask, ALiBi, etc.).
-    static int mkl_enable = ggml_sycl_get_env("GGML_SYCL_ENABLE_MKL_FA", 1);
-    if (mkl_enable == 1 && Q->ne[0] >= 64 && mask && !sinks &&
-        Q->ne[1] >= 32 && K->ne[1] >= 1024 &&
-        max_bias == 0.0f && logit_softcap == 0.0f &&
-        (Q->ne[3] == K->ne[3] || K->ne[3] == 1)) {
-        // F16 K/V strides must be a multiple of ne[0]*2 (the natural row size
-        // in bytes). This passes both dense (nb1 == ne0*2) and interleaved
-        // (nb1 == H * ne0*2). Only pathological test strides like nb1=32 or
-        // nb1=75 for ne0=40 fall through to TILE.
-        bool kv_strides_ok = true;
-        for (const ggml_tensor * t : {K, V}) {
-            if (t->type == GGML_TYPE_F16 && t->nb[1] % (t->ne[0] * 2) != 0) {
-                kv_strides_ok = false;
-                break;
-            }
-        }
-        if (kv_strides_ok) {
-            return BEST_FATTN_KERNEL_MKL;
-        }
     }
 
     for (const ggml_tensor * t : {Q, K, V, mask}) {
@@ -273,10 +240,10 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
     ggml_sycl_set_device(ctx.device);
 
     // n_kv watchdog: log when n_kv differs from the last FA call with
-    // the same D — helps detect cache-truncation issues.
+    // the same D - helps detect cache-truncation issues.
     static int nkv_debug = -1;
     if (nkv_debug < 0) {
-        nkv_debug = ggml_sycl_get_env("GGML_SYCL_MKL_FA_DEBUG", 0);
+        nkv_debug = ggml_sycl_get_env("GGML_SYCL_FA_DEBUG", 0);
     }
     if (nkv_debug == 1) {
         const ggml_tensor * K_dbg = dst->src[1];
@@ -288,8 +255,7 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
         int Dk = (int)K_dbg->ne[0];
         const char * kname = "TILE";
         best_fattn_kernel k = ggml_sycl_get_best_fattn_kernel(ctx.device, dst);
-        if (k == BEST_FATTN_KERNEL_MKL)  kname = "MKL";
-        if (k == BEST_FATTN_KERNEL_VEC)  kname = "VEC";
+                if (k == BEST_FATTN_KERNEL_VEC)  kname = "VEC";
         int64_t delta = 0;
         if (Dk == 256) {
             delta = cur_nkv - last_nkv_d256;
@@ -330,9 +296,6 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             ggml_sycl_flash_attn_ext_hybrid(ctx, dst);
             break;
 #endif
-        case BEST_FATTN_KERNEL_MKL:
-            ggml_sycl_flash_attn_ext_mkl(ctx, dst);
-            break;
     }
 
 }
