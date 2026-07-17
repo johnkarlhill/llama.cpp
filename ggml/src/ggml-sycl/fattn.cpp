@@ -245,14 +245,17 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
     if (nkv_debug == 1) {
         const ggml_tensor * K_dbg = dst->src[1];
         const ggml_tensor * V_dbg = dst->src[2];
+        const ggml_tensor * Q_dbg = dst->src[0];
         static int64_t last_nkv_d256 = 0, last_nkv_d512 = 0;
         static int fa_call_seq = 0;
         fa_call_seq++;
         int64_t cur_nkv = K_dbg->ne[1];
         int Dk = (int)K_dbg->ne[0];
-        const char * kname = "TILE";
+        const char * kname = "???";
         best_fattn_kernel k = ggml_sycl_get_best_fattn_kernel(ctx.device, dst);
-                if (k == BEST_FATTN_KERNEL_VEC)  kname = "VEC";
+        if (k == BEST_FATTN_KERNEL_ONEDNN) kname = "ONEDNN";
+        if (k == BEST_FATTN_KERNEL_TILE)   kname = "TILE";
+        if (k == BEST_FATTN_KERNEL_VEC)    kname = "VEC";
         int64_t delta = 0;
         if (Dk == 256) {
             delta = cur_nkv - last_nkv_d256;
@@ -261,11 +264,12 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             delta = cur_nkv - last_nkv_d512;
             last_nkv_d512 = cur_nkv;
         }
-        GGML_LOG_INFO("[FA-DISP] #%d %s D=%d n_kv=%lld delta=%lld "
-                "V_ne1=%lld\n",
+        GGML_LOG_INFO("[FA-DISP] #%d %s D=%d K=%s V=%s n_kv=%lld delta=%lld "
+                "n_q=%lld\n",
                 fa_call_seq, kname, Dk,
+                ggml_type_name(K_dbg->type), ggml_type_name(V_dbg->type),
                 (long long)cur_nkv, (long long)delta,
-                (long long)V_dbg->ne[1]);
+                (long long)Q_dbg->ne[1]);
     }
 
     const best_fattn_kernel fk = ggml_sycl_get_best_fattn_kernel(ggml_sycl_get_device(), dst);
