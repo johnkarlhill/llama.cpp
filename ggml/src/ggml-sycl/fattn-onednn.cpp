@@ -37,14 +37,19 @@ bool ggml_sycl_flash_attn_ext_onednn_supported(const ggml_tensor * dst) {
     const ggml_tensor * sinks = dst->src[4];
 
     // F16 KV: native SDPA at any KV length.
-    // Quantized/F32 KV: dequant + SDPA at prefill lengths (K >= 1024, Q >= 32).
-    // BF16 is not yet handled: to_fp16_nc_sycl does not register BF16 (block
-    // size 1, not quantized), and to_fp16_sycl assumes contiguous data which
-    // fails pathological test strides. Real BF16 KV caches are always contiguous,
-    // so a cont_to_f16_sycl<bf16> or to_fp16_sycl with a contiguity check will
-    // unlock this. Deferred to keep the diff focused on quantized KV.
+    // Non-F16: dequant to F16 then SDPA at prefill lengths. Only the
+    // standard quantized KV cache types (Q4_0-Q8_0) and F32 are accepted
+    // because their to_fp16_sycl conversion is verified. BF16 and IQ*
+    // are excluded: BF16 needs a strided conversion kernel that does not
+    // exist yet; IQ types are model-weight-only quants with no dequant
+    // registration and are never used as KV caches.
     if (K->type != GGML_TYPE_F16 || V->type != GGML_TYPE_F16) {
-        if (K->type == GGML_TYPE_BF16 || V->type == GGML_TYPE_BF16) {
+        auto kt = K->type, vt = V->type;
+        bool k_ok = kt == GGML_TYPE_F32 || kt == GGML_TYPE_Q4_0 || kt == GGML_TYPE_Q4_1 ||
+                    kt == GGML_TYPE_Q5_0 || kt == GGML_TYPE_Q5_1 || kt == GGML_TYPE_Q8_0;
+        bool v_ok = vt == GGML_TYPE_F32 || vt == GGML_TYPE_Q4_0 || vt == GGML_TYPE_Q4_1 ||
+                    vt == GGML_TYPE_Q5_0 || vt == GGML_TYPE_Q5_1 || vt == GGML_TYPE_Q8_0;
+        if (!k_ok || !v_ok) {
             return false;
         }
         if (Q->ne[1] < 32 || K->ne[1] < 1024) {
