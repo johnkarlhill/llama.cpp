@@ -37,8 +37,16 @@ bool ggml_sycl_flash_attn_ext_onednn_supported(const ggml_tensor * dst) {
     const ggml_tensor * sinks = dst->src[4];
 
     // F16 KV: native SDPA at any KV length.
-    // Quantized/F32/BF16 KV: dequant + SDPA at prefill lengths (K >= 1024, Q >= 32).
+    // Quantized/F32 KV: dequant + SDPA at prefill lengths (K >= 1024, Q >= 32).
+    // BF16 is not yet handled: to_fp16_nc_sycl does not register BF16 (block
+    // size 1, not quantized), and to_fp16_sycl assumes contiguous data which
+    // fails pathological test strides. Real BF16 KV caches are always contiguous,
+    // so a cont_to_f16_sycl<bf16> or to_fp16_sycl with a contiguity check will
+    // unlock this. Deferred to keep the diff focused on quantized KV.
     if (K->type != GGML_TYPE_F16 || V->type != GGML_TYPE_F16) {
+        if (K->type == GGML_TYPE_BF16 || V->type == GGML_TYPE_BF16) {
+            return false;
+        }
         if (Q->ne[1] < 32 || K->ne[1] < 1024) {
             return false;
         }
@@ -297,40 +305,19 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
             }
         }
     } else {
-        // F32: cont_to_f16_sycl<float> (handles strides).
-        // BF16: to_fp16_nc_sycl with strides (to_fp16_sycl assumes contiguous;
-        //       the BF16 block size is 1, so s01 = nb1/ts and nc correctly
-        //       handles arbitrary strides including pathological test data).
+        // F32: strided copy to dense F16 via cont_to_f16_sycl<float>.
         K_f16.alloc(ggml_nelements(K));
         K_ptr = K_f16.ptr;
-        if (K->type == GGML_TYPE_F32) {
-            cont_to_f16_sycl<float>((const char *) K->data, K_f16.ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
-                                    K->nb[1], K->nb[2], K->nb[3], stream);
-        } else {
-            const size_t ts = ggml_type_size(K->type);
-            to_fp16_nc_sycl_t to_fp16 = ggml_get_to_fp16_nc_sycl(K->type);
-            to_fp16((const char *) K->data, K_f16.ptr,
-                    K->ne[0], K->ne[1], K->ne[2], K->ne[3],
-                    (int64_t)K->nb[1] / ts, (int64_t)K->nb[2] / ts, (int64_t)K->nb[3] / ts,
-                    stream);
-        }
+        cont_to_f16_sycl<float>((const char *) K->data, K_f16.ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
+                                K->nb[1], K->nb[2], K->nb[3], stream);
         V_is_K_view = (K->data == V->data);
         if (V_is_K_view) {
             V_ptr = K_ptr;
         } else {
             V_f16.alloc(ggml_nelements(V));
             V_ptr = V_f16.ptr;
-            if (V->type == GGML_TYPE_F32) {
-                cont_to_f16_sycl<float>((const char *) V->data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
-                                        V->nb[1], V->nb[2], V->nb[3], stream);
-            } else {
-                const size_t ts = ggml_type_size(V->type);
-                to_fp16_nc_sycl_t to_fp16 = ggml_get_to_fp16_nc_sycl(V->type);
-                to_fp16((const char *) V->data, V_f16.ptr,
-                        V->ne[0], V->ne[1], V->ne[2], V->ne[3],
-                        (int64_t)V->nb[1] / ts, (int64_t)V->nb[2] / ts, (int64_t)V->nb[3] / ts,
-                        stream);
-            }
+            cont_to_f16_sycl<float>((const char *) V->data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
+                                    V->nb[1], V->nb[2], V->nb[3], stream);
         }
     }
 
