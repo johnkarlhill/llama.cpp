@@ -269,6 +269,17 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
     }
 
     const best_fattn_kernel fk = ggml_sycl_get_best_fattn_kernel(ggml_sycl_get_device(), dst);
+    // DEBUG: trace which test case crashes
+    {
+        const ggml_tensor * K_d = dst->src[1];
+        const ggml_tensor * Q_d = dst->src[0];
+        const char * kn = "TILE";
+        if (fk == BEST_FATTN_KERNEL_ONEDNN) kn = "ONEDNN";
+        if (fk == BEST_FATTN_KERNEL_VEC)   kn = "VEC";
+        fprintf(stderr, "[FA-TRACE] %s D=%d K=%s V=%s kv=%lld nb1=%lld\n",
+                kn, (int)K_d->ne[0], ggml_type_name(K_d->type), ggml_type_name(dst->src[2]->type),
+                (long long)K_d->ne[1], (long long)K_d->nb[1]);
+    }
     switch (fk) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("Not support Flash-Attention");
