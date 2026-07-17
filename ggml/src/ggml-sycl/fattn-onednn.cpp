@@ -321,7 +321,7 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
             V_f16.alloc(ggml_nelements(V));
             V_ptr = V_f16.ptr;
             if (V->type == GGML_TYPE_F32) {
-                cont_to_fp16_sycl<float>((const char *) V->data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
+                cont_to_f16_sycl<float>((const char *) V->data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
                                         V->nb[1], V->nb[2], V->nb[3], stream);
             } else {
                 const size_t ts = ggml_type_size(V->type);
