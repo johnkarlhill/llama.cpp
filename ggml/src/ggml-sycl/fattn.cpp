@@ -264,12 +264,13 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             delta = cur_nkv - last_nkv_d512;
             last_nkv_d512 = cur_nkv;
         }
-        GGML_LOG_INFO("[FA-DISP] #%d %s D=%d K=%s V=%s n_kv=%lld delta=%lld "
+        fprintf(stderr, "[FA-DISP] #%d %s D=%d K=%s V=%s n_kv=%lld delta=%lld "
                 "n_q=%lld\n",
                 fa_call_seq, kname, Dk,
                 ggml_type_name(K_dbg->type), ggml_type_name(V_dbg->type),
                 (long long)cur_nkv, (long long)delta,
                 (long long)Q_dbg->ne[1]);
+        fflush(stderr);
     }
 
     const best_fattn_kernel fk = ggml_sycl_get_best_fattn_kernel(ggml_sycl_get_device(), dst);
