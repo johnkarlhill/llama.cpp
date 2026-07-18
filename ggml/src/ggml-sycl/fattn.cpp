@@ -293,9 +293,7 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
             const char *kn = (fk == BEST_FATTN_KERNEL_ONEDNN) ? "ONEDNN" :
                              (fk == BEST_FATTN_KERNEL_TILE) ? "TILE" :
                              (fk == BEST_FATTN_KERNEL_VEC) ? "VEC" : "???";
-            fprintf(stderr, "[FA-TIME] #%lld %s D=%d K=%s n_kv=%lld n_q=%lld "
-                    "this=%lldus avg=%lldus
-",
+            fprintf(stderr, "[FA-TIME] #%lld %s D=%d K=%s n_kv=%lld n_q=%lld this=%lldus avg=%lldus\n",
                     (long long)fa_call_count, kn, (int)Kt->ne[0],
                     ggml_type_name(Kt->type),
                     (long long)Kt->ne[1], (long long)dst->src[0]->ne[1],
