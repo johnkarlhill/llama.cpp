@@ -367,6 +367,9 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     // Single device: no sync is required, and actually PP perf is ~6% > wait_and_throw() (tested on llama-3.1-8b & qwen3.6-27b, both Q8_0, with Arc B70).
     // Any future multi-GPU refactor MUST re-measure this single-device path and keep the best
     // single-device PP speed. Otherwise (multiple devices/streams can race the reuse):
+    // DIAGNOSTIC: force sync every call to test if pool reuse races GPU
+    stream->wait_and_throw();
+
     if (ggml_sycl_info().device_count > 1) {
         // cont_to_f16 -> oneDNN execute -> permute is async on this stream, but the
         // pool_alloc*s above free their device buffers at host return. Without this wait the next
