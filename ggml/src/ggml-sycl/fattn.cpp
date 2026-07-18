@@ -273,7 +273,36 @@ void ggml_sycl_flash_attn_ext(ggml_backend_sycl_context & ctx, ggml_tensor * dst
         fflush(stderr);
     }
 
+    static int fa_timing = -1;
+    static int64_t fa_call_count = 0;
+    static int64_t total_us = 0;
+    if (fa_timing < 0) {
+        fa_timing = ggml_sycl_get_env("GGML_SYCL_FA_TIMING", 0);
+    }
+    auto t0 = (fa_timing == 1) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::now();
+
+    (void)t0;
     const best_fattn_kernel fk = ggml_sycl_get_best_fattn_kernel(ggml_sycl_get_device(), dst);
+    if (fa_timing == 1) {
+        auto t1 = std::chrono::steady_clock::now();
+        auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        total_us += us;
+        fa_call_count++;
+        if (fa_call_count % 100 == 0 || us > 500) {
+            const ggml_tensor *Kt = dst->src[1];
+            const char *kn = (fk == BEST_FATTN_KERNEL_ONEDNN) ? "ONEDNN" :
+                             (fk == BEST_FATTN_KERNEL_TILE) ? "TILE" :
+                             (fk == BEST_FATTN_KERNEL_VEC) ? "VEC" : "???";
+            fprintf(stderr, "[FA-TIME] #%lld %s D=%d K=%s n_kv=%lld n_q=%lld "
+                    "this=%lldus avg=%lldus
+",
+                    (long long)fa_call_count, kn, (int)Kt->ne[0],
+                    ggml_type_name(Kt->type),
+                    (long long)Kt->ne[1], (long long)dst->src[0]->ne[1],
+                    (long long)us, (long long)(total_us / fa_call_count));
+            fflush(stderr);
+        }
+    }
     switch (fk) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("Not support Flash-Attention");
