@@ -9,7 +9,6 @@
 #include "fattn-onednn.hpp"
 #include "fattn-tile.hpp"
 #include "convert.hpp"
-#include "fattn-buffers.hpp"
 
 // set minimum query length to treat as prefill (32)
 #define GGML_SYCL_FA_ONEDNN_MIN_Q 32
@@ -226,13 +225,11 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     ggml_sycl_pool_alloc<sycl::half> Qf(ctx.pool(), (size_t) H * q * d);
     cont_to_f16_sycl<float>((const char *) Q->data, Qf.get(), d, q, H, mb, Q->nb[1], Q->nb[2], Q->nb[3], stream);
 
-    // K/V buffers: F16 path uses pool-alloc; non-F16 path uses fattn-buffers.
+    // K/V: use pool-alloc for both F16 and dequant paths.
     sycl::half * K_ptr = nullptr;
     sycl::half * V_ptr = nullptr;
     std::optional<ggml_sycl_pool_alloc<sycl::half>> Kf_pool;
     std::optional<ggml_sycl_pool_alloc<sycl::half>> Vf_pool;
-    ggml_sycl_fattn_alloc K_f16(ctx.fattn_buffers().K);
-    ggml_sycl_fattn_alloc V_f16(ctx.fattn_buffers().V);
     bool V_is_K_view = false;
 
     if (K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16) {
@@ -243,14 +240,14 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         K_ptr = Kf_pool->get();
         V_ptr = Vf_pool->get();
     } else if (ggml_is_quantized(K->type)) {
-        // Quantized K/V: dequant to dense F16.
+        // Quantized K/V: dequant to dense F16 using pool, same lifetime as F16 path.
+        Kf_pool.emplace(ctx.pool(), ggml_nelements(K));
+        K_ptr = Kf_pool->get();
         {
             const char * K_data = (const char *)K->data;
             const bool k_non_dense = ((int64_t)K->ne[1] * K->nb[1] != K->nb[2]) && K->ne[2] > 1;
             const bool k_gemma = k_non_dense &&
                 ((int64_t)K->nb[2] < (int64_t)K->ne[1] * (int64_t)K->nb[1]);
-            K_f16.alloc(ggml_nelements(K));
-            K_ptr = K_f16.ptr;
             if (ggml_is_contiguously_allocated(K) && !k_non_dense) {
                 to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(K->type, dst);
                 to_fp16(K_data, K_ptr, ggml_nelements(K), stream);
@@ -280,12 +277,12 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         if (V_is_K_view) {
             V_ptr = K_ptr;
         } else {
+            Vf_pool.emplace(ctx.pool(), ggml_nelements(V));
+            V_ptr = Vf_pool->get();
             const char * V_data = (const char *)V->data;
             const bool v_non_dense = ((int64_t)V->ne[1] * V->nb[1] != V->nb[2]) && V->ne[2] > 1;
             const bool v_gemma = v_non_dense &&
                 ((int64_t)V->nb[2] < (int64_t)V->ne[1] * (int64_t)V->nb[1]);
-            V_f16.alloc(ggml_nelements(V));
-            V_ptr = V_f16.ptr;
             if (ggml_is_contiguously_allocated(V) && !v_non_dense) {
                 to_fp16_sycl_t to_fp16 = ggml_get_to_fp16_sycl(V->type, dst);
                 to_fp16(V_data, V_ptr, ggml_nelements(V), stream);
@@ -311,17 +308,17 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
         }
     } else {
         // F32: strided copy to dense F16 via cont_to_f16_sycl<float>.
-        K_f16.alloc(ggml_nelements(K));
-        K_ptr = K_f16.ptr;
-        cont_to_f16_sycl<float>((const char *) K->data, K_f16.ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
+        Kf_pool.emplace(ctx.pool(), ggml_nelements(K));
+        K_ptr = Kf_pool->get();
+        cont_to_f16_sycl<float>((const char *) K->data, K_ptr, K->ne[0], K->ne[1], K->ne[2], K->ne[3],
                                 K->nb[1], K->nb[2], K->nb[3], stream);
         V_is_K_view = (K->data == V->data);
         if (V_is_K_view) {
             V_ptr = K_ptr;
         } else {
-            V_f16.alloc(ggml_nelements(V));
-            V_ptr = V_f16.ptr;
-            cont_to_f16_sycl<float>((const char *) V->data, V_f16.ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
+            Vf_pool.emplace(ctx.pool(), ggml_nelements(V));
+            V_ptr = Vf_pool->get();
+            cont_to_f16_sycl<float>((const char *) V->data, V_ptr, V->ne[0], V->ne[1], V->ne[2], V->ne[3],
                                     V->nb[1], V->nb[2], V->nb[3], stream);
         }
     }
@@ -367,9 +364,6 @@ void ggml_sycl_flash_attn_ext_onednn(ggml_backend_sycl_context & ctx, ggml_tenso
     // Single device: no sync is required, and actually PP perf is ~6% > wait_and_throw() (tested on llama-3.1-8b & qwen3.6-27b, both Q8_0, with Arc B70).
     // Any future multi-GPU refactor MUST re-measure this single-device path and keep the best
     // single-device PP speed. Otherwise (multiple devices/streams can race the reuse):
-    // DIAGNOSTIC: force sync every call to test if pool reuse races GPU
-    stream->wait_and_throw();
-
     if (ggml_sycl_info().device_count > 1) {
         // cont_to_f16 -> oneDNN execute -> permute is async on this stream, but the
         // pool_alloc*s above free their device buffers at host return. Without this wait the next
