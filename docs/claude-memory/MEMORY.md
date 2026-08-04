@@ -1,0 +1,11 @@
+- [AI PR Hygiene](ai-pr-hygiene.md) — How we collaborate to avoid AI-slop flags on llama.cpp PRs
+- [MKL FA Workflow](mkl-fa-workflow.md) — Build, test, benchmark scripts and model aliases for the SYCL flash attention PR
+- [Project TPS SYCL Perf](project_tps_sycl_perf.md) — PR #25025 (MKL FA, MERGED 2026-07-31), PR #25874 (ONEDNN quants, merge-ready), PR #25214 (heartbeat)
+- [VEC vs TILE Decode Investigation](vec-tile-decode-investigation.md) — Discord repro: TILE beats VEC at decode on BMG (quantized KV); gate provenance + shape-matrix A/B test plan (NOT started)
+- [Pre-Commit Smoke Tests](pre-commit-smoke-tests.md) — Three-test battery before pushing PR #25874: test-backend-ops, Gemma multi-turn coherence, Qwen 32K perf benchmark
+- [User Role SYCL Engineer](user_role_sycl_engineer.md) — @johnkarlhill, contributor to ggml-org/llama.cpp
+- [MKL F16 Multi-Turn Bug](mkl-f16-multiturn-bug.md) — FIXED: F16 cache corruption resolved in commit 13f503255
+- [XeTLA FMHA Notes](xetla-fmha-notes.md) — Xe FA speed ordering + the one faster-than-SDPA path (fused-dequant FMHA, Task #31) + pitfalls to design around
+- [Model Arch → FA Path Map](model-arch-fa-map.md) — Source-verified: which model families hit MKL/SDPA vs TILE, each gate clause ↔ one real arch, testing checklist
+- [Future Optimization Targets](future-optimization-targets.md) — Post-attention roadmap: XMX weight matmuls for Q4_K_M (research only, waiting on PR clearance)
+- [KV Cache Pipeline, Simplified](kv-cache-pipeline-simplified.md) — Plain-language reference: quantize once on write, dequant on read (bulk for prefill XMX, in-register for decode); why the gate cares about quantized KV
