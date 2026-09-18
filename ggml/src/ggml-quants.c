@@ -547,6 +547,13 @@ void dequantize_row_q2_0(const block_q2_0 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+// PQ2_0 and PTQ1_0 are the two ternary packings used by Prism ML's published
+// Ternary-Bonsai GGUFs (ggml types 142 and 143). Both keep one fp16 scale per group
+// of 128 weights: PQ2_0 stores each ternary value in a 2-bit slot, PTQ1_0 packs the
+// trits densely. The reference implementations below are ported from
+// PrismML-Eng/llama.cpp so the two sides agree bit for bit.
+
+
 void dequantize_row_pq2_0(const block_pq2_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK_PQ2_0;
 
@@ -566,6 +573,7 @@ void dequantize_row_pq2_0(const block_pq2_0 * GGML_RESTRICT x, float * GGML_REST
         }
     }
 }
+
 
 void dequantize_row_ptq1_0(const block_ptq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_PTQ1_0 == 0);

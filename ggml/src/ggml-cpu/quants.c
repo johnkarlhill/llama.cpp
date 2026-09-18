@@ -30,16 +30,16 @@ void quantize_row_q1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
     quantize_row_q1_0_ref(x, y, k);
 }
 
+void quantize_row_q2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q2_0_ref(x, y, k);
+}
+
 void quantize_row_pq2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     quantize_row_pq2_0_ref(x, y, k);
 }
 
 void quantize_row_ptq1_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     quantize_row_ptq1_0_ref(x, y, k);
-}
-
-void quantize_row_q2_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_q2_0_ref(x, y, k);
 }
 
 void quantize_row_q4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
@@ -236,7 +236,7 @@ void ggml_vec_dot_q2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
 
 // PQ2_0: same 2-bit codec as Q2_0, 128-wide blocks (one scale per 128 weights),
 // so one PQ2_0 block spans four Q8_0 blocks.
-void ggml_vec_dot_pq2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_pq2_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK_PQ2_0;
     const int nb = n / qk;
 
@@ -285,7 +285,7 @@ void ggml_vec_dot_pq2_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, 
 // PTQ1_0: Prism packed-trit, 128-wide blocks. Element order matches
 // dequantize_row_ptq1_0: staged windows over qs (16 bytes stage-2, 8 bytes
 // stage-1) then qh. One PTQ1_0 block spans four Q8_0 blocks.
-void ggml_vec_dot_ptq1_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_ptq1_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK_PTQ1_0;
     const int nb = n / qk;
 
