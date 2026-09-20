@@ -1474,7 +1474,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
 
         // BISECTION: use the proven v1 vec_dot with v3's lane map (lane -> chunk ci)
-        tmp += vec_dot_pq2_0_q8_1(bx, by, ci);
+        tmp += vec_dot_pq2_0_q8_1(bx, by, 0);
     }
 
 #pragma unroll
