@@ -1,4 +1,5 @@
 #include "mmvq.hpp"
+#include <sycl/ext/oneapi/experimental/printf.hpp>
 
 #include "ggml.h"
 #include "common.hpp"
@@ -1522,11 +1523,11 @@ static void mul_mat_vec_pq2_0_q8_1_v3dbg_sycl(const void * vx, const void * vy,
                     float v1tot = 0.0f;
                     for (int c = 0; c < 4; ++c) {
                         float s = vec_dot_pq2_0_q8_1(bx, &y[c], c);
-                        printf("DBG v1 chunk%d sum=%.1f d2=%f ds=%f\n", c, s,
+                        sycl::ext::oneapi::experimental::printf("DBG v1 chunk%d sum=%.1f d2=%f ds=%f\n", c, s,
                                (float)bx->d, (float)y[c].ds[0]);
                         v1tot += s;
                     }
-                    printf("DBG v1 total=%.3f\n", v1tot);
+                    sycl::ext::oneapi::experimental::printf("DBG v1 total=%.3f\n", v1tot);
                 }
                 // v3-style per-lane partials
                 float p3 = 0.0f;
@@ -1540,14 +1541,14 @@ static void mul_mat_vec_pq2_0_q8_1_v3dbg_sycl(const void * vx, const void * vy,
                     const int qx = (x0 | (x0 << 6)) & 0x03030303;
                     const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
                     p3 += (float) t * ((float) bx->d * (float) (by->ds[0]));
-                    printf("DBG v3 lane=%d b=%d wb=%02x u=%08x t=%d\n", lane, b,
+                    sycl::ext::oneapi::experimental::printf("DBG v3 lane=%d b=%d wb=%02x u=%08x t=%d\n", lane, b,
                            (unsigned)(unsigned char)wb, (unsigned)u, t);
                 }
                 // warp reduce
                 #pragma unroll
                 for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1)
                     p3 += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), p3, mask);
-                if (lane == 0) printf("DBG v3 total=%.3f\n", p3);
+                if (lane == 0) sycl::ext::oneapi::experimental::printf("DBG v3 total=%.3f\n", p3);
                 if (row < (int)(sizeof(float) * 8)) dst[row] = 0.0f; // keep dst sane
             });
     });
