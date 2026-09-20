@@ -1497,11 +1497,12 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
                 sumi_v1 = dpct::dp4a(uu, qxa, sumi_v1);
                 sumi_v1 = dpct::dp4a(vv, qya, sumi_v1);
             }
+            // sum this lane's t contribution to chunk ci over the 8 lanes of the same ci
+            // (each ci group: lanes ci*8..ci*8+7). Use group reduce with zero-mask.
+            int tmask = (ci == 0) ? t : 0;
+            int tsum = sycl::reduce_over_group(item.get_group(), tmask, sycl::plus<int>());
             if (lane == 0) {
-                sycl::ext::oneapi::experimental::printf("DBG ci=%d v1sumi=%d\n", ci, sumi_v1);
-            }
-            if (co == 0) {
-                sycl::ext::oneapi::experimental::printf("DBG lane=%d t=%d wb=%02x u=%08x qx=%08x\n", lane, t, (unsigned)wb, (unsigned)u, (unsigned)qx);
+                sycl::ext::oneapi::experimental::printf("DBG ci0: v1sumi=%d v3sum=%d\n", sumi_v1, tsum);
             }
         }
 #endif
