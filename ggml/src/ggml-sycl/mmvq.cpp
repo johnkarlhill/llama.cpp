@@ -1558,8 +1558,9 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, item_ct1);
-                mul_mat_vec_pq2_0_dbg_template(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_q<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                              VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1>(
+                    vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
@@ -3390,5 +3391,27 @@ bool ggml_sycl_mul_mat_vec_q_glu_reorder(enum ggml_type src0_type, enum ggml_glu
             return true;
         default:
             return false;
+    }
+}
+
+// ---- DEBUG EXPORTS (standalone kernel-diff test; remove before merge) ----
+extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, const void * vy,
+        float * dst, int ncols, int nrows, int which, uintptr_t queue_ptr) {
+    dpct::queue_ptr stream = (dpct::queue_ptr) queue_ptr;
+    if (which == 0) {
+        mul_mat_vec_pq2_0_q8_1_v3_sycl(vx, vy, dst, ncols, nrows, stream);
+    } else {
+        const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
+        const sycl::range<3> block_nums(1, 1, block_num_y);
+        const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
+        stream->submit([&](sycl::handler & cgh) {
+            cgh.parallel_for(
+                sycl::nd_range<3>(block_nums * block_dims, block_dims),
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                    mul_mat_vec_q<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                  VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1>(
+                        vx, vy, dst, ncols, nrows, item_ct1);
+                });
+        });
     }
 }
