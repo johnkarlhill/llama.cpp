@@ -1,5 +1,4 @@
 #include "mmvq.hpp"
-#include <sycl/ext/oneapi/experimental/builtins.hpp>
 
 #include "ggml.h"
 #include "common.hpp"
@@ -1462,29 +1461,25 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     const block_pq2_0 * x = (const block_pq2_0 *) vx;
     const block_q8_1  * y = (const block_q8_1  *) vy;
 
+    const int ci = lane / 8;         // q8_1 chunk (32 elems) this lane feeds
+    const int co = (lane % 8) * 4;   // byte offset of this lane's 4 activations
+
     // NOTE: each 128-weight block carries its OWN fp16 scale d (v1 got this
     // right; an earlier draft hoisted block 0's d across the row and produced
     // garbage generations despite correct code decoding).
-    // Each lane walks weight bytes b = lane, lane+WARP_SIZE, ... so the
-    // kernel is correct for any WARP_SIZE that divides 32 (the build may
-    // define GGML_SYCL_WARP_SIZE=16).
     float tmp = 0.0f;
     for (int i = 0; i < blocks_per_row; ++i) {
         const block_pq2_0 * bx = &x[row * blocks_per_row + i];
-        for (int b = lane; b < QK_PQ2_0 / 4; b += WARP_SIZE) {
-            const int ci = b / 8;           // q8_1 chunk (32 elems) this byte feeds
-            const int co = (b % 8) * 4;     // byte offset of these 4 activations
-            const block_q8_1 * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
+        const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
 
-            const int wb = bx->qs[b];
-            const int u  = *((const int *) (by->qs + co));
+        const int wb = bx->qs[lane];
+        const int u  = *((const int *) (by->qs + co));
 
-            const int x0 = (wb | (wb << 12)) & 0x000F000F;
-            const int qx = (x0 | (x0 << 6)) & 0x03030303;
+        const int x0 = (wb | (wb << 12)) & 0x000F000F;
+        const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
-            const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-            tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
-        }
+        const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
+        tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
     }
 
 #pragma unroll
@@ -1495,63 +1490,6 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     if (lane == 0) {
         dst[row] = tmp;
     }
-}
-
-
-// TEMP DEBUG: prints both decode paths for row0/block0 of the first matmul
-static void mul_mat_vec_pq2_0_q8_1_v3dbg_sycl(const void * vx, const void * vy,
-                                           float * dst, const int ncols,
-                                           const int nrows,
-                                           dpct::queue_ptr stream) {
-    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
-    const sycl::range<3> block_nums(1, 1, nrows);
-    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
-    stream->submit([&](sycl::handler & cgh) {
-        cgh.parallel_for(
-            sycl::nd_range<3>(block_nums * block_dims, block_dims),
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1)
-                              + item_ct1.get_local_id(1);
-                if (row >= nrows) return;
-                const int blocks_per_row = ncols / QK_PQ2_0;
-                const int lane = item_ct1.get_local_id(2);
-                const block_pq2_0 * x = (const block_pq2_0 *) vx;
-                const block_q8_1  * y = (const block_q8_1  *) vy;
-                const block_pq2_0 * bx = &x[row * blocks_per_row];
-                // v1-style reference for chunk 0 and chunk 1..3
-                if (lane == 0) {
-                    float v1tot = 0.0f;
-                    for (int c = 0; c < 4; ++c) {
-                        float s = vec_dot_pq2_0_q8_1(bx, &y[c], c);
-                        sycl::ext::oneapi::experimental::printf("DBG v1 chunk%d sum=%.1f d2=%f ds=%f\n", c, s,
-                               (float)bx->d, (float)y[c].ds[0]);
-                        v1tot += s;
-                    }
-                    sycl::ext::oneapi::experimental::printf("DBG v1 total=%.3f\n", v1tot);
-                }
-                // v3-style per-lane partials
-                float p3 = 0.0f;
-                for (int b = lane; b < QK_PQ2_0 / 4; b += WARP_SIZE) {
-                    const int ci = b / 8;
-                    const int co = (b % 8) * 4;
-                    const block_q8_1 * by = &y[ci];
-                    const int wb = bx->qs[b];
-                    const int u  = *((const int *) (by->qs + co));
-                    const int x0 = (wb | (wb << 12)) & 0x000F000F;
-                    const int qx = (x0 | (x0 << 6)) & 0x03030303;
-                    const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-                    p3 += (float) t * ((float) bx->d * (float) (by->ds[0]));
-                    sycl::ext::oneapi::experimental::printf("DBG v3 lane=%d b=%d wb=%02x u=%08x t=%d\n", lane, b,
-                           (unsigned)(unsigned char)wb, (unsigned)u, t);
-                }
-                // warp reduce
-                #pragma unroll
-                for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1)
-                    p3 += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), p3, mask);
-                if (lane == 0) sycl::ext::oneapi::experimental::printf("DBG v3 total=%.3f\n", p3);
-                if (row < (int)(sizeof(float) * 8)) dst[row] = 0.0f; // keep dst sane
-            });
-    });
 }
 
 static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
@@ -1619,7 +1557,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         const int stride_col_y, const int stride_col_dst,
         dpct::queue_ptr stream) {
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_ncols<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
@@ -2738,8 +2676,11 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                         src1_ncols, stride_col_y, stride_col_dst, stream);
                     return;
                 } else if (i == 0 || src1_ncols == 1) {
-                    GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
-                    mul_mat_vec_pq2_0_q8_1_v3dbg_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
+                    const int stride_col_y   = src1_padded_col_size / QK8_1;
+                    const int stride_col_dst = dst->ne[0];
+                    GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>\n");
+                    mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
+                        ne00, row_diff, stride_col_y, stride_col_dst, stream);
                 }
                 break;
             case GGML_TYPE_PTQ1_0:
