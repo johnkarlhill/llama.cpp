@@ -1428,6 +1428,87 @@ static void mul_mat_vec_q2_0_q8_1_sycl_switch_ncols(
 // QK2_0=32-element steps, so QK=32 with qi=4 (four int32 words per 128-elem
 // block = 16 bytes): the vec_dot receives iqs = chunk index 0..3 and indexes
 // the block itself.
+
+// v3: PQ2_0-specialized MMVQ (tg path, ncols_dst == 1). The generic template
+// instantiates PQ2_0 with qi=4, so only 4 lanes cooperate on one 128-element
+// block and every q8_1 load instruction scatters its 32 lanes across 8
+// different 160-byte regions - 8-16x L1 transaction amplification that keeps
+// decode at ~17% of B70 bandwidth. Q6_K (qi=32, all lanes on one block)
+// reaches 83% with the identical launch shape, so the launch is fine and the
+// work distribution is the problem.
+//
+// Here all 32 lanes process ONE 128-element block per iteration:
+//   lane L  -> weight byte qs[L] (elements 4L..4L+3, perfectly coalesced 32B)
+//              activation 4B at chunk L/8, offset (L%8)*4 (coalesced 128B)
+// Decode is a 7-op SWAR spread verified over all 256 byte values; the
+// w = c-1 correction becomes an extra dp4a against 0x01010101 (sum of the 4
+// activation bytes) instead of ALU work in the decode. A 256-entry LUT was
+// measured SLOWER (11.35 vs 14.74 t/s) - IGC materializes constexpr tables
+// as global loads - so the ALU spread stays.
+static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
+                                      const void * __restrict__ vy,
+                                      float * __restrict__ dst,
+                                      const int ncols, const int nrows,
+                                      const sycl::nd_item<3> & item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
+    if (row >= nrows) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    const int lane           = item_ct1.get_local_id(2);
+
+    const block_pq2_0 * x = (const block_pq2_0 *) vx;
+    const block_q8_1  * y = (const block_q8_1  *) vy;
+
+    const int ci = lane / 8;         // q8_1 chunk (32 elems) this lane feeds
+    const int co = (lane % 8) * 4;   // byte offset of this lane's 4 activations
+
+    const float d2 = ggml_sycl_fp16_to_fp32(x[row * blocks_per_row].d);
+
+    float tmp = 0.0f;
+    for (int i = 0; i < blocks_per_row; ++i) {
+        const block_pq2_0 * bx = &x[row * blocks_per_row + i];
+        const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
+
+        const int wb = bx->qs[lane];
+        const int u  = *((const int *) (by->qs + co));
+
+        const int x0 = (wb | (wb << 12)) & 0x000F000F;
+        const int qx = (x0 | (x0 << 6)) & 0x03030303;
+
+        const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
+        tmp = sycl::fma((float) t, ggml_sycl_fp16_to_fp32(by->ds[0]), tmp);
+    }
+    tmp *= d2;
+
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        dst[row] = tmp;
+    }
+}
+
+static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
+                                           float * dst, const int ncols,
+                                           const int nrows,
+                                           dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
                                         float * dst, const int ncols,
                                         const int nrows,
@@ -2596,7 +2677,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     return;
                 } else if (i == 0 || src1_ncols == 1) {
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
-                    mul_mat_vec_pq2_0_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
+                    mul_mat_vec_pq2_0_q8_1_v3_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
                 }
                 break;
             case GGML_TYPE_PTQ1_0:
