@@ -1481,28 +1481,19 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
 #ifdef PQ2_V3_DEBUG
-        if (true) {
-            // v1-style scalar decode for this lane's chunk (elements ci*32..ci*32+31)
-            int sumi_v1 = 0;
-            const int16_t * qs16 = (const int16_t *) (bx->qs + 8*ci);
-            for (int j = 0; j < 4; ++j) {
-                const int q = qs16[j];
-                int qxa = 0, qya = 0;
-                for (int k = 0; k < 4; ++k) {
-                    qxa |= (((q >> (2*k)) & 3) - 1 & 0xFF) << (8*k);
-                    qya |= (((q >> (2*(k+4))) & 3) - 1 & 0xFF) << (8*k);
-                }
-                const int uu = *((const int *)(by->qs + 8*j));
-                const int vv = *((const int *)(by->qs + 8*j + 4));
-                sumi_v1 = dpct::dp4a(uu, qxa, sumi_v1);
-                sumi_v1 = dpct::dp4a(vv, qya, sumi_v1);
+        {
+            // per-lane scalar check: t must equal sum_k a_k*(c_k-1), no reductions involved
+            const int16_t * qs16 = (const int16_t *) (bx->qs + 8*ci);  // v1 chunk words
+            const int j = co / 8;              // which int16 word pair covers elements co..co+3
+            const int q = qs16[2*j];           // low word holds elements 8j..8j+3 (v1 layout)
+            int ssum = 0;
+            for (int k = 0; k < 4; ++k) {
+                const int c = (q >> (2*k)) & 3;
+                const int a = (int) by->qs[co + k];
+                ssum += a * (c - 1);
             }
-            // sum this lane's t contribution to chunk ci over the 8 lanes of the same ci
-            // (each ci group: lanes ci*8..ci*8+7). Use group reduce with zero-mask.
-            int tmask = (item_ct1.get_local_id(2) / 8 == ci) ? t : 0;
-            int tsum = sycl::reduce_over_group(item_ct1.get_group(), tmask, sycl::plus<int>());
-            if (item_ct1.get_local_id(2) == 0 && tsum == sumi_v1 && i == 0) {
-                sycl::ext::oneapi::experimental::printf("DBG MISMATCH row=%d blk=%d ci=%d v1=%d v3=%d\n", row, i, ci, sumi_v1, tsum);
+            if (t != ssum) {
+                sycl::ext::oneapi::experimental::printf("DBGM row=%d blk=%d lane=%d t=%d ssum=%d\n", row, i, lane, t, ssum);
             }
         }
 #endif
