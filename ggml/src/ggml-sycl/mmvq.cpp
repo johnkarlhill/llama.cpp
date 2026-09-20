@@ -1,5 +1,5 @@
 #include "mmvq.hpp"
-#include <sycl/ext/oneapi/experimental/printf.hpp>
+#include <sycl/ext/oneapi/experimental/builtins.hpp>
 
 #include "ggml.h"
 #include "common.hpp"
