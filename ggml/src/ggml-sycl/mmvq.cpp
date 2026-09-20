@@ -1,3 +1,4 @@
+#define PQ2_V3_DEBUG 1
 #include "mmvq.hpp"
 
 #include "ggml.h"
@@ -1479,6 +1480,31 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
+#ifdef PQ2_V3_DEBUG
+        if (row == 0 && i == 0) {
+            // v1-style scalar decode for this lane's chunk (elements ci*32..ci*32+31)
+            int sumi_v1 = 0;
+            const int16_t * qs16 = (const int16_t *) (bx->qs + 8*ci);
+            for (int j = 0; j < 4; ++j) {
+                const int q = qs16[j];
+                int qxa = 0, qya = 0;
+                for (int k = 0; k < 4; ++k) {
+                    qxa |= (((q >> (2*k)) & 3) - 1 & 0xFF) << (8*k);
+                    qya |= (((q >> (2*(k+4))) & 3) - 1 & 0xFF) << (8*k);
+                }
+                const int uu = *((const int *)(by->qs + 8*j));
+                const int vv = *((const int *)(by->qs + 8*j + 4));
+                sumi_v1 = dpct::dp4a(uu, qxa, sumi_v1);
+                sumi_v1 = dpct::dp4a(vv, qya, sumi_v1);
+            }
+            if (lane == 0) {
+                sycl::ext::oneapi::experimental::printf("DBG ci=%d v1sumi=%d\n", ci, sumi_v1);
+            }
+            if (co == 0) {
+                sycl::ext::oneapi::experimental::printf("DBG lane=%d t=%d wb=%02x u=%08x qx=%08x\n", lane, t, (unsigned)wb, (unsigned)u, (unsigned)qx);
+            }
+        }
+#endif
         tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
     }
 
