@@ -1464,7 +1464,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     const int ci = lane / 8;         // q8_1 chunk (32 elems) this lane feeds
     const int co = (lane % 8) * 4;   // byte offset of this lane's 4 activations
 
-    const float d2 = ggml_sycl_fp16_to_fp32(x[row * blocks_per_row].d);
+    const float d2 = x[row * blocks_per_row].d;
 
     float tmp = 0.0f;
     for (int i = 0; i < blocks_per_row; ++i) {
@@ -1478,7 +1478,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-        tmp = sycl::fma((float) t, ggml_sycl_fp16_to_fp32(by->ds[0]), tmp);
+        tmp = sycl::fma((float) t, by->ds[0], tmp);
     }
     tmp *= d2;
 
