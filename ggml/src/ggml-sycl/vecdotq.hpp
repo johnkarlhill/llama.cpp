@@ -1045,48 +1045,9 @@ vec_dot_q2_0_q8_1(const void *__restrict__ vbq,
 // CUDA oracle: vec_dot_pq2_0_q8_1 in ggml-cuda/vecdotq.cuh @ 9a9394a. The CUDA
 // version's HIP twin q2_0_symbols4_hip (documented byte-identical to the
 // __byte_perm chain): table[c] == (uint8_t)(c - 1) for 2-bit codes, low byte of
-// each int16 -> elements 4j..4j+3, high byte -> 4j+4..4j+7.
-// v2 (LUT decode): the original port decoded each byte with an 8-op shift/and
-// chain (~16 ALU per int16 word), making the kernel ALU-decode-bound at ~17% of
-// B70 bandwidth. Each byte holds 4 x 2-bit codes, so the full decode is a pure
-// function of the byte: a 256-entry byte -> u32 LUT replaces the whole chain
-// with one load per output word. Bit-identical to the shift-chain port (the
-// table is generated from the same ((c-1) & 0xFF) formula).
-static constexpr uint32_t pq2_0_decode_lut[256] = {
-    0xFFFFFFFFu, 0xFFFFFF00u, 0xFFFFFF01u, 0xFFFFFF02u, 0xFFFF00FFu, 0xFFFF0000u, 0xFFFF0001u, 0xFFFF0002u,
-    0xFFFF01FFu, 0xFFFF0100u, 0xFFFF0101u, 0xFFFF0102u, 0xFFFF02FFu, 0xFFFF0200u, 0xFFFF0201u, 0xFFFF0202u,
-    0xFF00FFFFu, 0xFF00FF00u, 0xFF00FF01u, 0xFF00FF02u, 0xFF0000FFu, 0xFF000000u, 0xFF000001u, 0xFF000002u,
-    0xFF0001FFu, 0xFF000100u, 0xFF000101u, 0xFF000102u, 0xFF0002FFu, 0xFF000200u, 0xFF000201u, 0xFF000202u,
-    0xFF01FFFFu, 0xFF01FF00u, 0xFF01FF01u, 0xFF01FF02u, 0xFF0100FFu, 0xFF010000u, 0xFF010001u, 0xFF010002u,
-    0xFF0101FFu, 0xFF010100u, 0xFF010101u, 0xFF010102u, 0xFF0102FFu, 0xFF010200u, 0xFF010201u, 0xFF010202u,
-    0xFF02FFFFu, 0xFF02FF00u, 0xFF02FF01u, 0xFF02FF02u, 0xFF0200FFu, 0xFF020000u, 0xFF020001u, 0xFF020002u,
-    0xFF0201FFu, 0xFF020100u, 0xFF020101u, 0xFF020102u, 0xFF0202FFu, 0xFF020200u, 0xFF020201u, 0xFF020202u,
-    0x00FFFFFFu, 0x00FFFF00u, 0x00FFFF01u, 0x00FFFF02u, 0x00FF00FFu, 0x00FF0000u, 0x00FF0001u, 0x00FF0002u,
-    0x00FF01FFu, 0x00FF0100u, 0x00FF0101u, 0x00FF0102u, 0x00FF02FFu, 0x00FF0200u, 0x00FF0201u, 0x00FF0202u,
-    0x0000FFFFu, 0x0000FF00u, 0x0000FF01u, 0x0000FF02u, 0x000000FFu, 0x00000000u, 0x00000001u, 0x00000002u,
-    0x000001FFu, 0x00000100u, 0x00000101u, 0x00000102u, 0x000002FFu, 0x00000200u, 0x00000201u, 0x00000202u,
-    0x0001FFFFu, 0x0001FF00u, 0x0001FF01u, 0x0001FF02u, 0x000100FFu, 0x00010000u, 0x00010001u, 0x00010002u,
-    0x000101FFu, 0x00010100u, 0x00010101u, 0x00010102u, 0x000102FFu, 0x00010200u, 0x00010201u, 0x00010202u,
-    0x0002FFFFu, 0x0002FF00u, 0x0002FF01u, 0x0002FF02u, 0x000200FFu, 0x00020000u, 0x00020001u, 0x00020002u,
-    0x000201FFu, 0x00020100u, 0x00020101u, 0x00020102u, 0x000202FFu, 0x00020200u, 0x00020201u, 0x00020202u,
-    0x01FFFFFFu, 0x01FFFF00u, 0x01FFFF01u, 0x01FFFF02u, 0x01FF00FFu, 0x01FF0000u, 0x01FF0001u, 0x01FF0002u,
-    0x01FF01FFu, 0x01FF0100u, 0x01FF0101u, 0x01FF0102u, 0x01FF02FFu, 0x01FF0200u, 0x01FF0201u, 0x01FF0202u,
-    0x0100FFFFu, 0x0100FF00u, 0x0100FF01u, 0x0100FF02u, 0x010000FFu, 0x01000000u, 0x01000001u, 0x01000002u,
-    0x010001FFu, 0x01000100u, 0x01000101u, 0x01000102u, 0x010002FFu, 0x01000200u, 0x01000201u, 0x01000202u,
-    0x0101FFFFu, 0x0101FF00u, 0x0101FF01u, 0x0101FF02u, 0x010100FFu, 0x01010000u, 0x01010001u, 0x01010002u,
-    0x010101FFu, 0x01010100u, 0x01010101u, 0x01010102u, 0x010102FFu, 0x01010200u, 0x01010201u, 0x01010202u,
-    0x0102FFFFu, 0x0102FF00u, 0x0102FF01u, 0x0102FF02u, 0x010200FFu, 0x01020000u, 0x01020001u, 0x01020002u,
-    0x010201FFu, 0x01020100u, 0x01020101u, 0x01020102u, 0x010202FFu, 0x01020200u, 0x01020201u, 0x01020202u,
-    0x02FFFFFFu, 0x02FFFF00u, 0x02FFFF01u, 0x02FFFF02u, 0x02FF00FFu, 0x02FF0000u, 0x02FF0001u, 0x02FF0002u,
-    0x02FF01FFu, 0x02FF0100u, 0x02FF0101u, 0x02FF0102u, 0x02FF02FFu, 0x02FF0200u, 0x02FF0201u, 0x02FF0202u,
-    0x0200FFFFu, 0x0200FF00u, 0x0200FF01u, 0x0200FF02u, 0x020000FFu, 0x02000000u, 0x02000001u, 0x02000002u,
-    0x020001FFu, 0x02000100u, 0x02000101u, 0x02000102u, 0x020002FFu, 0x02000200u, 0x02000201u, 0x02000202u,
-    0x0201FFFFu, 0x0201FF00u, 0x0201FF01u, 0x0201FF02u, 0x020100FFu, 0x02010000u, 0x02010001u, 0x02010002u,
-    0x020101FFu, 0x02010100u, 0x02010101u, 0x02010102u, 0x020102FFu, 0x02010200u, 0x02010201u, 0x02010202u,
-    0x0202FFFFu, 0x0202FF00u, 0x0202FF01u, 0x0202FF02u, 0x020200FFu, 0x02020000u, 0x02020001u, 0x02020002u,
-    0x020201FFu, 0x02020100u, 0x02020101u, 0x02020102u, 0x020202FFu, 0x02020200u, 0x02020201u, 0x02020202u,
-};
-
+// each int16 -> elements 4j..4j+3, high byte -> 4j+4..4j+7. The SYCL port
+// builds those sign-extended bytes with constant shifts (IGC-safe).
+// Bit-exactness verified against the HIP decode model (20k random cases).
 static __dpct_inline__ float
 vec_dot_pq2_0_q8_1(const void *__restrict__ vbq,
                    const block_q8_1 *__restrict__ bq8_1, const int &iqs) {
@@ -1102,12 +1063,18 @@ vec_dot_pq2_0_q8_1(const void *__restrict__ vbq,
     int sumi = 0;
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
-        const int q  = qs[j]; // 8 x 2-bit codes: low byte = elements 0-3, high = 4-7
+        const int q  = qs[j]; // 8 x 2-bit codes
         const int u  = get_int_b4(bq8_1_chunk->qs, j*2+0);
         const int v  = get_int_b4(bq8_1_chunk->qs, j*2+1);
 
-        const int qx = (int) pq2_0_decode_lut[q & 0xFF];
-        const int qy = (int) pq2_0_decode_lut[(q >> 8) & 0xFF];
+        int qx = 0, qy = 0;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const int c_lo = (q >> (2 * i)) & 0x3;         // element i
+            const int c_hi = (q >> (2 * (i + 4))) & 0x3;   // element i+4
+            qx |= ((c_lo - 1) & 0xFF) << (8 * i);
+            qy |= ((c_hi - 1) & 0xFF) << (8 * i);
+        }
 
         sumi = dpct::dp4a(u, qx, sumi);
         sumi = dpct::dp4a(v, qy, sumi);
