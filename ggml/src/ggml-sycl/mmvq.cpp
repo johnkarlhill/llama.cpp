@@ -1520,7 +1520,7 @@ static void mul_mat_vec_pq2_0_dbg_template(const void * __restrict__ vx,
     for (int i = lane / (qi / vdr); i < blocks_per_row; i += blocks_per_warp) {
         const int iqs = vdr * (lane % (qi / vdr));    // chunk 0..3
         const int ibx = row * blocks_per_row + i;
-        const float s = vec_dot_pq2_0_q8_1(&x[ibx], &y[i * stride_y], iqs);
+        const float s = vec_dot_pq2_0_q8_1_swar(&x[ibx], &y[i * stride_y], iqs);
         if (row == 0 && i < 4) dst[1200 + i * 16 + lane] = s;
         tmp += s;
     }
