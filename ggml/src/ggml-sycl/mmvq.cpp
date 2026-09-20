@@ -1464,8 +1464,9 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     const int ci = lane / 8;         // q8_1 chunk (32 elems) this lane feeds
     const int co = (lane % 8) * 4;   // byte offset of this lane's 4 activations
 
-    const float d2 = x[row * blocks_per_row].d;
-
+    // NOTE: each 128-weight block carries its OWN fp16 scale d (v1 got this
+    // right; an earlier draft hoisted block 0's d across the row and produced
+    // garbage generations despite correct code decoding).
     float tmp = 0.0f;
     for (int i = 0; i < blocks_per_row; ++i) {
         const block_pq2_0 * bx = &x[row * blocks_per_row + i];
@@ -1478,9 +1479,8 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-        tmp += (float) t * (float) (by->ds[0]);
+        tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
     }
-    tmp *= d2;
 
 #pragma unroll
     for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
