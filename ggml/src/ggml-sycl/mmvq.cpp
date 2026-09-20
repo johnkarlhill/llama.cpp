@@ -1473,14 +1473,8 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const block_pq2_0 * bx = &x[row * blocks_per_row + i];
         const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
 
-        const int wb = bx->qs[lane];
-        const int u  = *((const int *) (by->qs + co));
-
-        const int x0 = (wb | (wb << 12)) & 0x000F000F;
-        const int qx = (x0 | (x0 << 6)) & 0x03030303;
-
-        const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-        tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
+        // BISECTION: use the proven v1 vec_dot with v3's lane map (lane -> chunk ci)
+        tmp += vec_dot_pq2_0_q8_1(bx, by, ci);
     }
 
 #pragma unroll
