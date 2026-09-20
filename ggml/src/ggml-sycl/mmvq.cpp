@@ -1461,25 +1461,29 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     const block_pq2_0 * x = (const block_pq2_0 *) vx;
     const block_q8_1  * y = (const block_q8_1  *) vy;
 
-    const int ci = lane / 8;         // q8_1 chunk (32 elems) this lane feeds
-    const int co = (lane % 8) * 4;   // byte offset of this lane's 4 activations
-
     // NOTE: each 128-weight block carries its OWN fp16 scale d (v1 got this
     // right; an earlier draft hoisted block 0's d across the row and produced
     // garbage generations despite correct code decoding).
+    // Each lane walks weight bytes b = lane, lane+WARP_SIZE, ... so the
+    // kernel is correct for any WARP_SIZE that divides 32 (the build may
+    // define GGML_SYCL_WARP_SIZE=16).
     float tmp = 0.0f;
     for (int i = 0; i < blocks_per_row; ++i) {
         const block_pq2_0 * bx = &x[row * blocks_per_row + i];
-        const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
+        for (int b = lane; b < QK_PQ2_0 / 4; b += WARP_SIZE) {
+            const int ci = b / 8;           // q8_1 chunk (32 elems) this byte feeds
+            const int co = (b % 8) * 4;     // byte offset of these 4 activations
+            const block_q8_1 * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
 
-        const int wb = bx->qs[lane];
-        const int u  = *((const int *) (by->qs + co));
+            const int wb = bx->qs[b];
+            const int u  = *((const int *) (by->qs + co));
 
-        const int x0 = (wb | (wb << 12)) & 0x000F000F;
-        const int qx = (x0 | (x0 << 6)) & 0x03030303;
+            const int x0 = (wb | (wb << 12)) & 0x000F000F;
+            const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
-        const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-        tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
+            const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
+            tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
+        }
     }
 
 #pragma unroll
