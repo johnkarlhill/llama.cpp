@@ -1478,7 +1478,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-        tmp = sycl::fma((float) t, by->ds[0], tmp);
+        tmp += (float) t * (float) (by->ds[0]);
     }
     tmp *= d2;
 
