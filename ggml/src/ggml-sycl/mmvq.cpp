@@ -1539,7 +1539,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_q8_1_v4(vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
@@ -1557,7 +1557,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_q8_1_v4(vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
