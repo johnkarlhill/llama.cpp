@@ -1527,6 +1527,96 @@ static void mul_mat_vec_pq2_0_dbg_template(const void * __restrict__ vx,
     if (row < 32) dst[1600 + row] = tmp;
 }
 
+
+// v4: PQ2_0 MMVQ with Q6_K-like access pattern (tg path, ncols_dst == 1).
+// 8 lanes per 128-elem block, 2 blocks per warp iteration:
+//   lane L in group g (g = L/8), block pair (2i + g):
+//     weight word w = L%8 (int32 = 4 bytes = 16 codes; 8 lanes x 4B = 32B coalesced)
+//     activations: chunk c = w/2, half h = (w%2)*16 -> 16B read; 8 lanes cover the
+//     block's 4 chunks = 128B coalesced.
+//   Decode: per byte, the same 7-op SWAR spread as v3, one dp4a per byte.
+//   Reduce: 8-lane butterflies (masks 4/2/1; mask 8 would mix the two blocks).
+//   After the loop, group totals ride to lane 0 via one mask-8 exchange and are
+//   written as two separate stores (no dst accumulation races).
+static void mul_mat_vec_pq2_0_q8_1_v4(const void * __restrict__ vx,
+                                      const void * __restrict__ vy,
+                                      float * __restrict__ dst,
+                                      const int ncols, const int nrows,
+                                      const sycl::nd_item<3> & item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
+    if (row >= nrows) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    const int lane           = item_ct1.get_local_id(2);
+
+    const block_pq2_0 * x = (const block_pq2_0 *) vx;
+    const block_q8_1  * y = (const block_q8_1  *) vy;
+
+    const int g  = lane / 8;         // which block of the pair
+    const int w  = lane % 8;         // weight word within the block
+    const int ci = w / 2;            // q8_1 chunk (32 elems)
+    const int ch = (w % 2) * 16;     // 16B half-chunk offset
+
+    float tmp = 0.0f;
+    for (int i0 = 0; i0 < blocks_per_row; i0 += 2) {
+        const int i = i0 + g;
+        if (i >= blocks_per_row) {
+            break;
+        }
+        const block_pq2_0 * bx = &x[row * blocks_per_row + i];
+        const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
+
+        const int wb4   = *((const int *) (bx->qs + w * 4));
+        const int scale = (int) ((float) bx->d * (float) (by->ds[0]));
+
+        float part = 0.0f;
+        #pragma unroll
+        for (int byi = 0; byi < 4; ++byi) {
+            const int wb = (wb4 >> (8 * byi)) & 0xFF;
+            const int u  = *((const int *) (by->qs + ch + byi * 4));
+
+            const int x0 = (wb | (wb << 12)) & 0x000F000F;
+            const int qx = (x0 | (x0 << 6)) & 0x03030303;
+
+            const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
+            part += (float) (t * scale);
+        }
+
+        // 8-lane butterfly (masks 4/2/1 stay within each block's group)
+        #pragma unroll
+        for (int mask = 4; mask > 0; mask >>= 1) {
+            part += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), part, mask);
+        }
+        tmp += part;
+    }
+
+    // fold the two group totals: one mask-8 xor exchange merges both groups'
+    // totals into every lane; group 0's lane 0 writes the row sum.
+    tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, 8);
+
+    if (w == 0) {
+        dst[row] = tmp;
+    }
+}
+
+static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
+                                           float * dst, const int ncols,
+                                           const int nrows,
+                                           dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_q8_1_v4(vx, vy, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
                                            float * dst, const int ncols,
                                            const int nrows,
