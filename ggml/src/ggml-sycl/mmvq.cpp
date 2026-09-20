@@ -1557,7 +1557,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         const int stride_col_y, const int stride_col_dst,
         dpct::queue_ptr stream) {
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_ncols<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
