@@ -1450,6 +1450,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
                                       const void * __restrict__ vy,
                                       float * __restrict__ dst,
                                       const int ncols, const int nrows,
+                                      int * dbg_err,
                                       const sycl::nd_item<3> & item_ct1) {
     const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
     if (row >= nrows) {
@@ -1482,10 +1483,9 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
 #ifdef PQ2_V3_DEBUG
         {
-            // per-lane scalar check: t must equal sum_k a_k*(c_k-1), no reductions involved
-            const int16_t * qs16 = (const int16_t *) (bx->qs + 8*ci);  // v1 chunk words
-            const int j = co / 8;              // which int16 word pair covers elements co..co+3
-            const int q = qs16[2*j];           // low word holds elements 8j..8j+3 (v1 layout)
+            const int16_t * qs16 = (const int16_t *) (bx->qs + 8*ci);
+            const int j = co / 8;
+            const int q = qs16[2*j];
             int ssum = 0;
             for (int k = 0; k < 4; ++k) {
                 const int c = (q >> (2*k)) & 3;
@@ -1493,7 +1493,9 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
                 ssum += a * (c - 1);
             }
             if (t != ssum) {
-                sycl::ext::oneapi::experimental::printf("DBGM row=%d blk=%d lane=%d t=%d ssum=%d\n", row, i, lane, t, ssum);
+                sycl::atomic_ref<int, sycl::memory_order_relaxed, sycl::memory_scope::device,
+                                 sycl::access::address_space::global_space> ac(*dbg_err);
+                ac.fetch_add(1);
             }
         }
 #endif
@@ -1510,6 +1512,8 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     }
 }
 
+static int dbg_err_host = 0;
+
 static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
                                            float * dst, const int ncols,
                                            const int nrows,
@@ -1517,14 +1521,30 @@ static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
     GGML_ASSERT(ncols % QK_PQ2_0 == 0);
     const sycl::range<3> block_nums(1, 1, nrows);
     const sycl::range<3> block_dims(1, 1, WARP_SIZE);
-
+#ifdef PQ2_V3_DEBUG
+    sycl::buffer<int, 1> dbg_buf(&dbg_err_host, 1);
+#endif
     stream->submit([&](sycl::handler & cgh) {
+#ifdef PQ2_V3_DEBUG
+        auto dbg_acc = dbg_buf.get_access<sycl::access::mode::read_write>(cgh);
+        int * dbg_ptr = &dbg_acc[0];
+#endif
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, item_ct1);
+#ifdef PQ2_V3_DEBUG
+                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, dbg_ptr, item_ct1);
+#else
+                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, nullptr, item_ct1);
+#endif
             });
     });
+#ifdef PQ2_V3_DEBUG
+    auto dbg_host = dbg_buf.get_host_access();
+    if (dbg_host[0] != 0) {
+        printf("PQ2V3: %d kernel-internal decode mismatches\n", (int)dbg_host[0]);
+    }
+#endif
 }
 
 static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
