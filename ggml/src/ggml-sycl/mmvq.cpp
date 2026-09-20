@@ -1464,6 +1464,8 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     const int ci = lane / 8;         // q8_1 chunk (32 elems) this lane feeds
     const int co = (lane % 8) * 4;   // byte offset of this lane's 4 activations
 
+    const bool dbg = (nrows == 10240);   // attn_qkv only
+
     // NOTE: each 128-weight block carries its OWN fp16 scale d (v1 got this
     // right; an earlier draft hoisted block 0's d across the row and produced
     // garbage generations despite correct code decoding).
@@ -1479,8 +1481,11 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
         const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-        tmp += (float) t * ((float) bx->d * (float) (by->ds[0]));
+        const float part = (float) t * ((float) bx->d * (float) (by->ds[0]));
+        if (dbg && row == 0 && i < 4) dst[1000 + i * 32 + lane] = part;
+        tmp += part;
     }
+    if (dbg && row < 32) dst[1500 + row] = tmp;
 
 #pragma unroll
     for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
@@ -1490,6 +1495,37 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
     if (lane == 0) {
         dst[row] = tmp;
     }
+}
+
+
+// DEBUG twin of the generic-template lane loop for PQ2_0 (WARP_SIZE=16 semantics):
+// records per-lane vec_dot partials for row 0 into dst[1200..] and the row total into dst[1600+row].
+static void mul_mat_vec_pq2_0_dbg_template(const void * __restrict__ vx,
+                                           const void * __restrict__ vy,
+                                           float * __restrict__ dst,
+                                           const int ncols, const int nrows,
+                                           const sycl::nd_item<3> & item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
+    if (row >= nrows) return;
+    const int lane = item_ct1.get_local_id(2);
+    const block_pq2_0 * x = (const block_pq2_0 *) vx;
+    const block_q8_1  * y = (const block_q8_1  *) vy;
+
+    const int qi = QI_PQ2_0;                      // 4
+    const int vdr = VDR_PQ2_0_Q8_1_MMVQ;          // 1
+    const int blocks_per_warp = (vdr * WARP_SIZE + qi - 1) / qi;   // 4
+    const int blocks_per_row = ncols / QK_PQ2_0;  // 40
+    const int stride_y = QK_PQ2_0 / QK8_1;        // 4
+
+    float tmp = 0.0f;
+    for (int i = lane / (qi / vdr); i < blocks_per_row; i += blocks_per_warp) {
+        const int iqs = vdr * (lane % (qi / vdr));    // chunk 0..3
+        const int ibx = row * blocks_per_row + i;
+        const float s = vec_dot_pq2_0_q8_1(&x[ibx], &y[i * stride_y], iqs);
+        if (row == 0 && i < 4) dst[1200 + i * 16 + lane] = s;
+        tmp += s;
+    }
+    if (row < 32) dst[1600 + row] = tmp;
 }
 
 static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
@@ -1522,9 +1558,8 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_q<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
-                              VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1>(
-                    vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_q8_1_v3(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_dbg_template(vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
