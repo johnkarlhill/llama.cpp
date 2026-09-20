@@ -57,7 +57,7 @@
 #define GGML_SYCL_DMMV_X 32
 #endif
 #ifndef GGML_SYCL_MMV_Y
-#define GGML_SYCL_MMV_Y 4
+#define GGML_SYCL_MMV_Y 1
 #endif
 
 #ifndef K_QUANTS_PER_ITERATION
