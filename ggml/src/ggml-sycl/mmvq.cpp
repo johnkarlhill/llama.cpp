@@ -2801,9 +2801,9 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                 } else if (i == 0 || src1_ncols == 1) {
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
-                    GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>\n");
-                    mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
-                        ne00, row_diff, stride_col_y, stride_col_dst, stream);
+                    GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
+                    mul_mat_vec_pq2_0_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
+                        ne00, row_diff, stream);
                 }
                 break;
             case GGML_TYPE_PTQ1_0:
