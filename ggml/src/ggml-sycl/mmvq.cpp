@@ -1445,6 +1445,7 @@ static void mul_mat_vec_q2_0_q8_1_sycl_switch_ncols(
 // activation bytes) instead of ALU work in the decode. A 256-entry LUT was
 // measured SLOWER (11.35 vs 14.74 t/s) - IGC materializes constexpr tables
 // as global loads - so the ALU spread stays.
+#pragma clang optimize off
 static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
                                       const void * __restrict__ vy,
                                       float * __restrict__ dst,
