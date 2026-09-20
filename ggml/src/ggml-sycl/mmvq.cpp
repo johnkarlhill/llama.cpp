@@ -1568,8 +1568,8 @@ static void mul_mat_vec_pq2_0_q8_1_v4(const void * __restrict__ vx,
         const block_pq2_0 * bx = &x[row * blocks_per_row + i];
         const block_q8_1  * by = &y[i * (QK_PQ2_0 / QK8_1) + ci];
 
-        const int wb4   = *((const int *) (bx->qs + w * 4));
-        const int scale = (int) ((float) bx->d * (float) (by->ds[0]));
+        const int wb4     = *((const int *) (bx->qs + w * 4));
+        const float scale = (float) bx->d * (float) (by->ds[0]);
 
         float part = 0.0f;
         #pragma unroll
@@ -1581,7 +1581,7 @@ static void mul_mat_vec_pq2_0_q8_1_v4(const void * __restrict__ vx,
             const int qx = (x0 | (x0 << 6)) & 0x03030303;
 
             const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
-            part += (float) (t * scale);
+            part += (float) t * scale;
         }
 
         // 8-lane butterfly (masks 4/2/1 stay within each block's group)
