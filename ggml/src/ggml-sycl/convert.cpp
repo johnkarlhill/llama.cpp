@@ -659,6 +659,10 @@ to_fp16_sycl_t ggml_get_to_fp16_sycl(ggml_type type, ggml_tensor * dst) {
             return dequantize_block_sycl<QK1_0, QR1_0, dequantize_q1_0>;
         case GGML_TYPE_Q2_0:
             return dequantize_block_sycl<QK2_0, QR2_0, dequantize_q2_0>;
+        case GGML_TYPE_PQ2_0:
+            return dequantize_block_sycl<QK_PQ2_0, 1, dequantize_pq2_0>;
+        case GGML_TYPE_PTQ1_0:
+            return dequantize_block_sycl<QK_PTQ1_0, 1, dequantize_ptq1_0>;
         case GGML_TYPE_Q4_0:
             if (dst->src[0]->extra &&
                 ((ggml_tensor_extra_gpu*)dst->src[0]->extra)->optimized_feature.reorder) {
@@ -749,6 +753,10 @@ to_fp32_sycl_t ggml_get_to_fp32_sycl(ggml_type type, ggml_tensor *dst) {
             return dequantize_block_sycl<QK1_0, QR1_0, dequantize_q1_0>;
         case GGML_TYPE_Q2_0:
             return dequantize_block_sycl<QK2_0, QR2_0, dequantize_q2_0>;
+        case GGML_TYPE_PQ2_0:
+            return dequantize_block_sycl<QK_PQ2_0, 1, dequantize_pq2_0>;
+        case GGML_TYPE_PTQ1_0:
+            return dequantize_block_sycl<QK_PTQ1_0, 1, dequantize_ptq1_0>;
         case GGML_TYPE_Q4_0:
             if (dst->src[0]->extra &&
                 ((ggml_tensor_extra_gpu*)dst->src[0]->extra)->optimized_feature.reorder) {

@@ -1037,6 +1037,128 @@ vec_dot_q2_0_q8_1(const void *__restrict__ vbq,
     return sum0 + sum1;
 }
 
+#define VDR_PQ2_0_Q8_1_MMVQ 1  // one 32-element chunk at a time (same per-chunk codec as Q2_0)
+#define VDR_PTQ1_0_Q8_1_MMVQ 4 // whole 128 block per call: keeps the byte walk uniform across lanes
+
+// PQ2_0 x Q8_1. Same per-chunk codec as Q2_0 but one scale per 128 weights:
+// iqs (0..3) selects the 32-element chunk inside the 128-wide block.
+// CUDA oracle: vec_dot_pq2_0_q8_1 in ggml-cuda/vecdotq.cuh @ 9a9394a. The CUDA
+// version's HIP twin q2_0_symbols4_hip (documented byte-identical to the
+// __byte_perm chain): table[c] == (uint8_t)(c - 1) for 2-bit codes, low byte of
+// each int16 -> elements 4j..4j+3, high byte -> 4j+4..4j+7. The SYCL port
+// builds those sign-extended bytes with constant shifts (IGC-safe).
+// Bit-exactness verified against the HIP decode model (20k random cases).
+static __dpct_inline__ float
+vec_dot_pq2_0_q8_1(const void *__restrict__ vbq,
+                   const block_q8_1 *__restrict__ bq8_1, const int &iqs) {
+
+    const block_pq2_0 * bq2_0 = (const block_pq2_0 *) vbq;
+
+    // 128 elements, ONE scale, four 32-element chunks (iqs selects the chunk).
+    const float d2 = bq2_0->d;
+    const int16_t * qs = (const int16_t *) bq2_0->qs + iqs * 4;
+
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int q  = qs[j]; // 8 x 2-bit codes
+        const int u  = get_int_b4(bq8_1_chunk->qs, j*2+0);
+        const int v  = get_int_b4(bq8_1_chunk->qs, j*2+1);
+
+        int qx = 0, qy = 0;
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const int c_lo = (q >> (2 * i)) & 0x3;         // element i
+            const int c_hi = (q >> (2 * (i + 4))) & 0x3;   // element i+4
+            qx |= ((c_lo - 1) & 0xFF) << (8 * i);
+            qy |= ((c_hi - 1) & 0xFF) << (8 * i);
+        }
+
+        sumi = dpct::dp4a(u, qx, sumi);
+        sumi = dpct::dp4a(v, qy, sumi);
+    }
+
+    const float d8 = bq8_1_chunk->ds[0];
+    return d2 * d8 * sumi;
+}
+
+// PTQ1_0 x Q8_1. One call consumes the full 128-weight block (VDR 4 = four
+// q8_1 chunks). CUDA oracle: vec_dot_ptq1_0_q8_1_multi<1> @ 9a9394a.
+// The SWAR trit decode widens bytes to 16-bit lanes so *3 cannot carry between
+// lanes; CUDA's __byte_perm selectors are replaced with constant shifts:
+//   0x4140 -> [b0,0,b1,0], 0x4342 -> [b2,0,b3,0], 0x7531 -> [a1,a3,b1,b3].
+// Digits land in bytes 1/3 of the widened product; the 0x00FF00FF mask keeps
+// lane low bytes for the next pass. Element k of the block lives in q8_1 chunk
+// k>>5, byte (k&31)>>2, lane k&3. Bit-exactness verified against the CUDA
+// oracle model (5000 random blocks).
+static __dpct_inline__ float
+vec_dot_ptq1_0_q8_1(const void *__restrict__ vbq,
+                    const block_q8_1 *__restrict__ bq8_1, const int &iqs) {
+
+    const block_ptq1_0 * bq = (const block_ptq1_0 *) vbq;
+
+    int sumi[4] = {0, 0, 0, 0};
+
+#pragma unroll
+    for (int g = 0; g < 6; ++g) { // 24 qs bytes = 6 int32 words
+        const uint32_t packed = get_int_b4(bq->qs, g);
+        // widen bytes to 16-bit lanes: [b0,0,b1,0] / [b2,0,b3,0]
+        uint32_t v_lo = (packed & 0xFFu) | (((packed >> 8) & 0xFFu) << 16);
+        uint32_t v_hi = ((packed >> 16) & 0xFFu) | (((packed >> 24) & 0xFFu) << 16);
+
+#pragma unroll
+        for (int t = 0; t < 5; ++t) {
+            const uint32_t w_lo = v_lo * 3;
+            const uint32_t w_hi = v_hi * 3;
+            v_lo = w_lo & 0x00FF00FFu;
+            v_hi = w_hi & 0x00FF00FFu;
+
+            // digits in bytes 1/3 of each lane: q = [d(b0),d(b1),d(b2),d(b3)] - 1
+            const uint32_t d0 = (w_lo >> 8) & 0xFFu;
+            const uint32_t d1 = (w_lo >> 24) & 0xFFu;
+            const uint32_t d2 = (w_hi >> 8) & 0xFFu;
+            const uint32_t d3 = (w_hi >> 24) & 0xFFu;
+            // per-byte (d - 1) as int8: digits {0,1,2} -> {0xFF,0x00,0x01}
+            const int q = (int) (((d0 - 1) & 0xFFu) | (((d1 - 1) & 0xFFu) << 8) |
+                                 (((d2 - 1) & 0xFFu) << 16) | (((d3 - 1) & 0xFFu) << 24));
+
+            const int e     = (g < 4 ? t * 16 + 4 * g : 80 + t * 8 + 4 * (g - 4));
+            const int u     = get_int_b4(bq8_1[iqs + (e >> 5)].qs, (e & 31) >> 2);
+            sumi[e >> 5]    = dpct::dp4a(q, u, sumi[e >> 5]);
+        }
+    }
+
+    // qh: 2 bytes, 4 trits each, MSB digit first
+    uint32_t v = (uint32_t) bq->qh[0] | ((uint32_t) bq->qh[1] << 16);
+#pragma unroll
+    for (int t = 0; t < 4; t += 2) {
+        const uint32_t w0 = v * 3;
+        v                 = w0 & 0x00FF00FFu;
+        const uint32_t w1 = v * 3;
+        v                 = w1 & 0x00FF00FFu;
+
+        const uint32_t d0 = (w0 >> 8) & 0xFFu;
+        const uint32_t d1 = (w0 >> 24) & 0xFFu;
+        const uint32_t d2 = (w1 >> 8) & 0xFFu;
+        const uint32_t d3 = (w1 >> 24) & 0xFFu;
+        const int q = (int) (((d0 - 1) & 0xFFu) | (((d1 - 1) & 0xFFu) << 8) |
+                             (((d2 - 1) & 0xFFu) << 16) | (((d3 - 1) & 0xFFu) << 24));
+
+        const int u = get_int_b4(bq8_1[iqs + 3].qs, 6 + t / 2);
+        sumi[3]     = dpct::dp4a(q, u, sumi[3]);
+    }
+
+    const float d = bq->d;
+    float acc     = 0.0f;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        acc += bq8_1[iqs + k].ds[0] * (float) sumi[k];
+    }
+    return d * acc;
+}
+
 static __dpct_inline__ float
 vec_dot_q4_1_q8_1(const void *__restrict__ vbq,
                   const block_q8_1 *__restrict__ bq8_1, const int &iqs) {

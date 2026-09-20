@@ -191,6 +191,41 @@ typedef struct {
 } block_q2_0;
 static_assert(sizeof(block_q2_0) == sizeof(ggml_half) + QK2_0 / 4, "wrong q2_0 block size/padding");
 
+// ---------------------------------------------------------------------------
+// PrismML experimental ternary block formats
+// (source: PrismML/llama.cpp fork, commit 9a9394a, ggml/src/ggml-common.h)
+// GGML_TYPE_PQ2_0 (PrismML type id 142) and GGML_TYPE_PTQ1_0 (PrismML id 143).
+// ---------------------------------------------------------------------------
+
+// Prism 2-bit: 2 bits/element, one fp16 scale per QK_PQ2_0 = 128 elements.
+// Element values map as {0,1,2,3} -> {-1, 0, 1, 2}.
+#define QK_PQ2_0 128
+typedef struct {
+    ggml_half d;              // delta (scale), one per 128 elements
+    uint8_t qs[QK_PQ2_0 / 4]; // 2 bits per element, little-endian bit packing
+} block_pq2_0;
+static_assert(sizeof(block_pq2_0) == sizeof(ggml_half) + QK_PQ2_0 / 4, "wrong pq2_0 block size/padding");
+
+// Prism packed-trit: base-3 trits, 5 trits/byte in qs[] plus 4 trits/byte in
+// qh[], one fp16 scale per QK_PTQ1_0 = 128 elements. Trit values {0,1,2} map
+// to {-1, 0, 1} via w = v*3; q = (w >> 8) - 1 (pure integer, no LUT).
+#define QK_PTQ1_0 128
+typedef struct {
+    uint8_t qs[(QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5]; // 24 B, 5 trits per byte -> 120 values
+    uint8_t qh[QK_PTQ1_0/64];                   // 2 B, 4 trits per byte -> 8 values
+    ggml_half d;                                // scale
+} block_ptq1_0;
+static_assert(sizeof(block_ptq1_0) == sizeof(ggml_half) + QK_PTQ1_0/64 + (QK_PTQ1_0 - 4*QK_PTQ1_0/64)/5,
+              "wrong ptq1_0 block size/padding");
+
+// QI = number of 32-bit integers before dequantization, QR = QK/QI values per int
+#define QI_PQ2_0  (QK_PQ2_0 / 32)
+#define QR_PQ2_0  1
+#define QI_PTQ1_0 (QK_PTQ1_0 / 32)
+#define QR_PTQ1_0 1
+
+
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta

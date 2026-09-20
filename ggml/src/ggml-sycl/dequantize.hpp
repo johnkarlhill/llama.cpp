@@ -123,6 +123,74 @@ static __dpct_inline__ void dequantize_q1_0(const void *vx, const int64_t ib,
     v.y() = (2 * bit_1 - 1) * d;
 }
 
+// PQ2_0: same 2-bit codec as Q2_0 but 128-element blocks (one fp16 scale per
+// 128 weights). iqs = element index within the block.
+static __dpct_inline__ void dequantize_pq2_0(const void *vx, const int64_t ib,
+                                             const int iqs, dfloat2 &v) {
+    const block_pq2_0 * x = (const block_pq2_0 *) vx;
+    const dfloat d = x[ib].d;
+
+    // element e -> byte e/4, bits 2*(e%4); pair elements land in the same byte
+    // only when iqs%4 < 3, so compute each element's byte independently.
+    const uint8_t vui0 = x[ib].qs[iqs / 4];
+    const uint8_t vui1 = x[ib].qs[(iqs + 1) / 4];
+
+    v.x() = ((vui0 >> ((iqs % 4) * 2)) & 3) - 1;
+    v.y() = ((vui1 >> (((iqs + 1) % 4) * 2)) & 3) - 1;
+
+#ifdef GGML_SYCL_F16
+    v.s0() = (dfloat)v.s0() * d;
+    v.s1() = (dfloat)v.s1() * d;
+#else
+    v.x() = (dfloat)v.x() * d;
+    v.y() = (dfloat)v.y() * d;
+#endif // GGML_SYCL_F16
+}
+
+// PTQ1_0: Prism packed-trit, 128-element blocks, 5 trits/byte in qs[] (staged
+// 32/16/8) plus 2 qh bytes (4 trits each). Element order and digit decode
+// mirror dequantize_row_ptq1_0 in ggml-quants.c: q = byte * pow3[n] (uint8
+// wrap intentional), digit = ((uint16)q * 3) >> 8 - 1, n = 0 is the most
+// significant trit. dequantize_block_sycl calls with iqs = element pair base
+// (QR 1 => 64 calls x 2 elements = 128).
+static __dpct_inline__ void dequantize_ptq1_0(const void *vx, const int64_t ib,
+                                              const int iqs, dfloat2 &v) {
+    const block_ptq1_0 * x = (const block_ptq1_0 *) vx;
+    const dfloat d = x[ib].d;
+
+    const uint16_t pow3_l[5] = {1, 3, 9, 27, 81};
+    auto trit_digit = [&](uint8_t byte, int n) -> int {
+        const uint8_t q = (uint8_t) ((uint16_t) byte * pow3_l[n]); // uint8 wrap intentional (mod 256)
+        return (((uint16_t) q * 3) >> 8) - 1;
+    };
+
+    // Element order (must match dequantize_row_ptq1_0):
+    //   k in   0..79 : byte k % 16, digit k / 16      (stage-16 window, bytes 0..15)
+    //   k in  80..119: byte 16 + (k-80) % 8, digit (k-80)/8 (stage-8 window, bytes 16..23)
+    //   k in 120..127: digit (k-120)/2 of qh[(k-120)%2]
+    const int k0 = iqs;
+    const int k1 = iqs + 1;
+    int t0, t1;
+
+    if (k0 < 120) {
+        const int b = (k0 < 80) ? k0 % 16 : 16 + (k0 - 80) % 8;
+        const int n = (k0 < 80) ? k0 / 16 : (k0 - 80) / 8;
+        t0 = trit_digit(x[ib].qs[b], n);
+    } else {
+        t0 = trit_digit(x[ib].qh[(k0 - 120) % 2], (k0 - 120) / 2);
+    }
+    if (k1 < 120) {
+        const int b = (k1 < 80) ? k1 % 16 : 16 + (k1 - 80) % 8;
+        const int n = (k1 < 80) ? k1 / 16 : (k1 - 80) / 8;
+        t1 = trit_digit(x[ib].qs[b], n);
+    } else {
+        t1 = trit_digit(x[ib].qh[(k1 - 120) % 2], (k1 - 120) / 2);
+    }
+
+    v.x() = (dfloat) t0 * d;
+    v.y() = (dfloat) t1 * d;
+}
+
 static __dpct_inline__ void dequantize_q4_1(const void *vx, const int64_t ib,
                                             const int iqs, dfloat2 &v) {
     const block_q4_1 * x = (const block_q4_1 *) vx;

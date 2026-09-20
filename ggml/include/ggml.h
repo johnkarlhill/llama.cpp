@@ -430,7 +430,13 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_COUNT   = 43,
+        // PrismML ternary block types. PrismML upstream uses ids 142/143 in the
+        // GGUF header, so we mirror those ids verbatim: GGUF stores the enum
+        // value per tensor, and a remap would break loading of prism files.
+        // Local ids 43/44 stay free (unused gap).
+        GGML_TYPE_PQ2_0   = 142, // prism 2-bit w/ per-128 fp16 scale (2.125 bpw)
+        GGML_TYPE_PTQ1_0  = 143, // prism packed-trit w/ per-128 fp16 scale (1.75 bpw)
+        GGML_TYPE_COUNT   = 144,
     };
 
     // [TAG_GGML_PREC]
@@ -486,6 +492,8 @@ extern "C" {
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PQ2_0   = 128, // PrismML group-128 2-bit (private ftype, mirrors prism fork)
+        GGML_FTYPE_MOSTLY_PTQ1_0  = 129, // PrismML group-128 packed-trit (private ftype)
     };
 
     // available tensor operations:
