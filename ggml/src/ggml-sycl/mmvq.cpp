@@ -1481,7 +1481,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
 
         const int t = dpct::dp4a(u, qx, 0) - dpct::dp4a(u, 0x01010101, 0);
 #ifdef PQ2_V3_DEBUG
-        if (row == 0 && i == 0) {
+        if (true) {
             // v1-style scalar decode for this lane's chunk (elements ci*32..ci*32+31)
             int sumi_v1 = 0;
             const int16_t * qs16 = (const int16_t *) (bx->qs + 8*ci);
@@ -1499,10 +1499,10 @@ static void mul_mat_vec_pq2_0_q8_1_v3(const void * __restrict__ vx,
             }
             // sum this lane's t contribution to chunk ci over the 8 lanes of the same ci
             // (each ci group: lanes ci*8..ci*8+7). Use group reduce with zero-mask.
-            int tmask = (ci == 0) ? t : 0;
+            int tmask = (item_ct1.get_local_id(2) / 8 == ci) ? t : 0;
             int tsum = sycl::reduce_over_group(item_ct1.get_group(), tmask, sycl::plus<int>());
-            if (lane == 0) {
-                sycl::ext::oneapi::experimental::printf("DBG ci0: v1sumi=%d v3sum=%d\n", sumi_v1, tsum);
+            if (item_ct1.get_local_id(2) == 0 && tsum == sumi_v1 && i == 0) {
+                sycl::ext::oneapi::experimental::printf("DBG MISMATCH row=%d blk=%d ci=%d v1=%d v3=%d\n", row, i, ci, sumi_v1, tsum);
             }
         }
 #endif
