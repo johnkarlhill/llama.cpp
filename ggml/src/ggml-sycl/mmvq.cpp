@@ -1,4 +1,6 @@
 #include "mmvq.hpp"
+#include <cstdio>
+#include <vector>
 
 #include "ggml.h"
 #include "common.hpp"
@@ -2895,6 +2897,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                                 const dpct::queue_ptr & stream) {
     const int64_t ne10 = src1->ne[0];
     GGML_ASSERT(ne10 % QK8_1 == 0);
+    static bool pq2_dumped = false;
 
     const int64_t ne00     = src0->ne[0];
     const int64_t row_diff = row_high - row_low;
@@ -3049,6 +3052,33 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
                     mul_mat_vec_pq2_0_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
                         ne00, row_diff, stream);
+                }
+                {
+                    static const bool pq2_dump = getenv("GGML_SYCL_PQ2_DUMP") != nullptr
+                        && getenv("GGML_SYCL_PQ2_DUMP")[0] == '1';
+                    if (pq2_dump && i == 0 && src1_ncols == 1 && !pq2_dumped) {
+                        pq2_dumped = true;
+                        FILE * fdbg = fopen("C:\\llama.cpp-build-sycl\\pq2_dump.bin", "wb");
+                        if (fdbg) {
+                            const size_t blk_sz = sizeof(block_pq2_0);
+                            const size_t y8_sz  = sizeof(block_q8_1);
+                            std::vector<char> xb(64 * blk_sz);
+                            stream->memcpy(xb.data(), src0_dd_i, xb.size()).wait();
+                            const int n_yb = (int)(src1_padded_col_size / QK8_1);
+                            std::vector<char> yb(n_yb * y8_sz);
+                            stream->memcpy(yb.data(), src1_ddq_i_bs, yb.size()).wait();
+                            std::vector<float> db(32);
+                            stream->memcpy(db.data(), dst_dd_i, db.size()).wait();
+                            fwrite(&ne10, sizeof(int), 1, fdbg);
+                            int n_yb_i = n_yb;
+                            fwrite(&n_yb_i, sizeof(int), 1, fdbg);
+                            fwrite(xb.data(), 1, xb.size(), fdbg);
+                            fwrite(yb.data(), 1, yb.size(), fdbg);
+                            fwrite(db.data(), 4, db.size(), fdbg);
+                            fclose(fdbg);
+                            printf("PQ2_DUMP_DONE\n");
+                        }
+                    }
                 }
                 break;
             case GGML_TYPE_PTQ1_0:
