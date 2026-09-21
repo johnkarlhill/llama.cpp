@@ -1556,17 +1556,20 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
     float tmp[ncols_dst] = {0.0f};
 
     // lane handles k-blocks i*32+lane, stride 32 (zero redundancy, 32x36B contiguous loads)
-    for (int i = 0; i < blocks_per_row; i += WARP_SIZE) {
+    // full padded trip count (no break): keeps loads pipelined across iterations
+    const int padded = (blocks_per_row + WARP_SIZE - 1) / WARP_SIZE * WARP_SIZE;
+    #pragma unroll 4
+    for (int i = 0; i < padded; i += WARP_SIZE) {
         const int b    = i + lane;
-        if (b >= blocks_per_row) break;
-        const int ibx  = row * blocks_per_row + b;
-        const int iby0 = b * (qk / QK8_1);             // 4 q8_1 chunks per 128-elem block
+        const bool ok  = b < blocks_per_row;
+        const int ibx  = row * blocks_per_row + (ok ? b : 0);
+        const int iby0 = (ok ? b : 0) * (qk / QK8_1);
 
         #pragma unroll
         for (int c = 0; c < qk / QK8_1; ++c) {         // 4 chunks
             #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                tmp[j] += vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c);
+                tmp[j] += ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
             }
         }
     }
