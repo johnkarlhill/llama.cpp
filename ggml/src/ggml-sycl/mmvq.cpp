@@ -1877,6 +1877,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
     }
     float * const lanedbg_local = lanedbg;
     static float * lanedbg2 = nullptr;
+    static bool dbg_init2 = false;
     if (!dbg_init2) {
         dbg_init2 = true;
         if (lanedbg) lanedbg2 = sycl::malloc_device<float>(4096, *stream);
