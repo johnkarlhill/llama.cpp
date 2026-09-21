@@ -3590,6 +3590,10 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_v3_sycl(vx, vy, dst, ncols, nrows, stream);
     } else if (which == 2) {
         mul_mat_vec_pq2_0_q8_1_v4_sycl(vx, vy, dst, ncols, nrows, stream);
+    } else if (which == 3) {
+        mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream);   // v5 (base fn)
+    } else if (which == 4) {
+        mul_mat_vec_pq2_0_q8_1_sycl_v5n<2>(vx, vy, dst, ncols, nrows, ncols/QK8_1, ncols, stream);
     } else {
         const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
         const sycl::range<3> block_nums(1, 1, block_num_y);
