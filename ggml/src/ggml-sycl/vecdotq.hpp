@@ -1169,7 +1169,47 @@ vec_dot_pq2_0_q8_1_swar(const void *__restrict__ vbq,
     return d2 * d8 * sumi;
 }
 
+// vec_dot_pq2_0_q8_1_lut: same math as the swar variant, weights via a
+// 256-entry LUT (pq2_lut256 in ggml-common.h). One indexed load per 4
+// elements replaces the 16-op scalar expansion. Bit-exact over 10k random
+// blocks vs the swar version (Python emulation, Sep 21).
+static __dpct_inline__ float
+vec_dot_pq2_0_q8_1_lut(const void *__restrict__ vbq,
+                       const block_q8_1 *__restrict__ bq8_1, const int &iqs) {
 
+    const block_pq2_0 * bq2_0 = (const block_pq2_0 *) vbq;
+
+    const float d2 = bq2_0->d;
+    const uint32_t * qs32 = (const uint32_t *) (bq2_0->qs + iqs * 8);
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    int sumi = 0;
+
+#pragma unroll
+    for (int j = 0; j < 2; ++j) {
+        const uint32_t q = qs32[j];  // 16 2-bit codes in 32 bits
+
+        // LUT: each byte of q maps to 4 int8 weights (code - 1)
+        const uint8_t * qb = (const uint8_t *) &q;
+        const uint32_t w0 = pq2_lut256[qb[0]];
+        const uint32_t w1 = pq2_lut256[qb[1]];
+        const uint32_t w2 = pq2_lut256[qb[2]];
+        const uint32_t w3 = pq2_lut256[qb[3]];
+
+        const int u0 = get_int_b4(bq8_1_chunk->qs, j*4+0);
+        const int u1 = get_int_b4(bq8_1_chunk->qs, j*4+1);
+        const int u2 = get_int_b4(bq8_1_chunk->qs, j*4+2);
+        const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
+
+        sumi = dpct::dp4a(w0, u0, sumi);
+        sumi = dpct::dp4a(w1, u1, sumi);
+        sumi = dpct::dp4a(w2, u2, sumi);
+        sumi = dpct::dp4a(w3, u3, sumi);
+    }
+
+    const float d8 = bq8_1_chunk->ds[0];
+    return d2 * d8 * sumi;
+}
 
 // PTQ1_0 x Q8_1. One call consumes the full 128-weight block (VDR 4 = four
 // q8_1 chunks). CUDA oracle: vec_dot_ptq1_0_q8_1_multi<1> @ 9a9394a.
