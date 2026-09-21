@@ -36,7 +36,6 @@
 #include <memory>
 #include <mutex>
 #include <random>
-#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -11685,14 +11684,15 @@ static bool run_fa_vec_slice(ggml_backend_t backend, ggml_backend_t backend_cpu,
 static bool test_backend(ggml_backend_t backend, ggml_backend_dev_t dev, test_mode mode, const char * op_names_filter, const char * params_filter,
                          printer * output_printer, const char * test_file_path, int parallel_workers) {
     auto filter_test_cases = [](std::vector<std::unique_ptr<test_case>> & test_cases, const char * params_filter) {
-        if (params_filter == nullptr) {
+        if (params_filter == nullptr || params_filter[0] == '\0') {
             return;
         }
 
-        std::regex params_filter_regex(params_filter);
+        // substring match instead of std::regex (icx/MSVC STL link issue on Windows)
+        const std::string pf(params_filter);
 
         for (auto it = test_cases.begin(); it != test_cases.end();) {
-            if (!std::regex_search((*it)->vars(), params_filter_regex)) {
+            if ((*it)->vars().find(pf) == std::string::npos) {
                 it = test_cases.erase(it);
                 continue;
             }
