@@ -273,6 +273,9 @@ bool ggml_sycl_op_fwht(ggml_backend_sycl_context & ctx, const ggml_tensor * src,
         case 512:
             launch_fwht<512>(src_d, dst_d, rows, scale, stream);
             return true;
+        case 1024:
+            launch_fwht<1024>(src_d, dst_d, rows, scale, stream);
+            return true;
         case 384:
             launch_kronecker<384, 12>(src_d, dst_d, rows, scale, stream);
             return true;
