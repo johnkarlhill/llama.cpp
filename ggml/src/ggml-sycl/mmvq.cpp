@@ -1913,8 +1913,19 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         const int ncols, const int nrows, const int ncols_dst,
         const int stride_col_y, const int stride_col_dst,
         dpct::queue_ptr stream) {
+    // A/B: default = v4-era template path (last known good gen). GGML_SYCL_PQ2_V6=1 opts
+    // into the v6 two-rows-per-warp kernel (2.4x isolated; 2-col path NOT yet validated).
+    static const bool use_v6 = getenv("GGML_SYCL_PQ2_V6") != nullptr
+        && strcmp(getenv("GGML_SYCL_PQ2_V6"), "1") == 0;
+    if (!use_v6) {
+        switch (ncols_dst) {
+            case 1: mul_mat_vec_pq2_0_q8_1_sycl_tpl(vx, vy, dst, ncols, nrows, stream); break;
+            default: mul_mat_vec_pq2_0_q8_1_sycl_ncols<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
+        }
+        return;
+    }
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // v5b k-parallel kernel
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // v6 via base fn
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_v6n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
