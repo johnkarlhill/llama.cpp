@@ -1528,6 +1528,76 @@ static void mul_mat_vec_pq2_0_dbg_template(const void * __restrict__ vx,
 }
 
 
+
+// v5: PQ2_0 MMVQ k-parallel kernel (tg path, ncols_dst == 1).
+// Template redundancy analysis: qi=4, vdr=1 -> 32 lanes compute only 4 unique chunks
+// per x-block (8x redundant dp4a), warp covers 8 blocks/iter with strided 36B loads.
+// v5: each lane owns a DIFFERENT x-block (32 blocks in flight), computes all 4 chunks
+// itself (8x dp4a/lane, zero redundancy), loads are 32x36B = 1152B contiguous per
+// warp-iteration. Sub-group reduce sums k-blocks. 4x k-parallelism vs template.
+template <int qk, int qi, typename block_q_t, int vdr,
+          vec_dot_q_sycl_t vec_dot_q_sycl>
+static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
+        const void * __restrict__ vx, const void * __restrict__ vy,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2) % WARP_SIZE;
+    const int warp  = item_ct1.get_local_id(2) / WARP_SIZE;
+    const int row   = item_ct1.get_group(2) * (WARP_SIZE/32) + warp;  // 1 row/warp (MMV_Y=1)
+
+    if (row >= nrows) return;
+
+    const block_q_t  * x = (const block_q_t *)  vx;
+    const block_q8_1 * y = (const block_q8_1 *) vy;
+
+    const int blocks_per_row = ncols / qk;             // k-dim blocks
+    float tmp = 0.0f;
+
+    // lane handles k-blocks i*32+lane, stride 32
+    for (int i = 0; i < blocks_per_row; i += WARP_SIZE) {
+        const int b    = i + lane;
+        const int ibx  = row * blocks_per_row + b;
+        const int iby0 = b * (qk / QK8_1);             // 4 q8_1 chunks per 128-elem block
+
+        if (b < blocks_per_row) {
+            #pragma unroll
+            for (int c = 0; c < qk / QK8_1; ++c) {     // 4 chunks
+                tmp += vec_dot_q_sycl(&x[ibx], &y[iby0 + c], c);
+            }
+        }
+    }
+
+    // sum across lanes = sum across k-blocks
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        dst[row] = tmp;
+    }
+}
+
+static void mul_mat_vec_pq2_0_q8_1_sycl_v5(const void * vx, const void * vy,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(
+                    vx, vy, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 // v4: PQ2_0 MMVQ with Q6_K-like access pattern (tg path, ncols_dst == 1).
 // 8 lanes per 128-elem block, 2 blocks per warp iteration:
 //   lane L in group g (g = L/8), block pair (2i + g):
@@ -1612,7 +1682,7 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v4(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
@@ -1629,7 +1699,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v4(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
@@ -1639,15 +1709,15 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
                                         const int nrows,
                                         dpct::queue_ptr stream) {
     GGML_ASSERT(ncols % QK_PQ2_0 == 0);
-    const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
-    const sycl::range<3> block_nums(1, 1, block_num_y);
-    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
+    // v5: 1 warp per work-group, one matrix row per warp
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
 
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_q8_1_v4(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(vx, vy, dst, ncols, nrows, item_ct1);
             });
     });
 }
