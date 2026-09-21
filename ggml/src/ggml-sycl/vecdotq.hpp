@@ -1098,7 +1098,7 @@ vec_dot_pq2_0_q8_1_swar(const void *__restrict__ vbq,
 
     const float d2 = bq2_0->d;
     // Load 4 int16 = 64 bits = 32 2-bit codes
-    const uint64_t packed = *reinterpret_cast<const uint64_t *>(bq2_0->qs + iqs * 4);
+    const uint64_t packed = *reinterpret_cast<const uint64_t *>(bq2_0->qs + iqs * 8);
     const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
 
     // SWAR 2-bit -> 8-bit expansion with -1 bias:
