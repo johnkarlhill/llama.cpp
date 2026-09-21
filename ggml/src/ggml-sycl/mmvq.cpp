@@ -1820,6 +1820,25 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
     });
 }
 
+// template-path fallback (GGML_SYCL_PQ2_V6=0): upstream generic ncols kernel
+static void mul_mat_vec_pq2_0_q8_1_sycl_tpl(
+        const void * vx, const void * vy, float * dst,
+        const int ncols, const int nrows,
+        dpct::queue_ptr stream) {
+    const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
+    const sycl::range<3> block_nums(1, 1, block_num_y);
+    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
+    stream->submit([&](sycl::handler &cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_q<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                              VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(
+                    vx, vy, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 template <int ncols_dst>
 static void mul_mat_vec_pq2_0_q8_1_sycl_ncols(
         const void * vx, const void * vy, float * dst,
