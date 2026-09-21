@@ -1536,10 +1536,11 @@ static void mul_mat_vec_pq2_0_dbg_template(const void * __restrict__ vx,
 // itself (8x dp4a/lane, zero redundancy), loads are 32x36B = 1152B contiguous per
 // warp-iteration. Sub-group reduce sums k-blocks. 4x k-parallelism vs template.
 template <int qk, int qi, typename block_q_t, int vdr,
-          vec_dot_q_sycl_t vec_dot_q_sycl>
+          vec_dot_q_sycl_t vec_dot_q_sycl, int ncols_dst>
 static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         const void * __restrict__ vx, const void * __restrict__ vy,
         float * __restrict__ dst, const int ncols, const int nrows,
+        const int stride_col_y, const int stride_col_dst,
         const sycl::nd_item<3> & item_ct1) {
 
     const int lane  = item_ct1.get_local_id(2);
@@ -1552,30 +1553,38 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
     const block_q8_1 * y = (const block_q8_1 *) vy;
 
     const int blocks_per_row = ncols / qk;             // k-dim blocks
-    float tmp = 0.0f;
+    float tmp[ncols_dst] = {0.0f};
 
-    // lane handles k-blocks i*32+lane, stride 32
+    // lane handles k-blocks i*32+lane, stride 32 (zero redundancy, 32x36B contiguous loads)
     for (int i = 0; i < blocks_per_row; i += WARP_SIZE) {
         const int b    = i + lane;
+        if (b >= blocks_per_row) break;
         const int ibx  = row * blocks_per_row + b;
         const int iby0 = b * (qk / QK8_1);             // 4 q8_1 chunks per 128-elem block
 
-        if (b < blocks_per_row) {
+        #pragma unroll
+        for (int c = 0; c < qk / QK8_1; ++c) {         // 4 chunks
             #pragma unroll
-            for (int c = 0; c < qk / QK8_1; ++c) {     // 4 chunks
-                tmp += vec_dot_q_sycl(&x[ibx], &y[iby0 + c], c);
+            for (int j = 0; j < ncols_dst; ++j) {
+                tmp[j] += vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c);
             }
         }
     }
 
     // sum across lanes = sum across k-blocks
     #pragma unroll
-    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
-        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    for (int j = 0; j < ncols_dst; ++j) {
+        #pragma unroll
+        for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+            tmp[j] += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp[j], mask);
+        }
     }
 
     if (lane == 0) {
-        dst[row] = tmp;
+        #pragma unroll
+        for (int j = 0; j < ncols_dst; ++j) {
+            dst[j * stride_col_dst + row] = tmp[j];
+        }
     }
 }
 
@@ -1682,7 +1691,7 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
             });
     });
 }
@@ -1699,7 +1708,7 @@ static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
             });
     });
 }
@@ -1717,7 +1726,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar>(vx, vy, dst, ncols, nrows, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
             });
     });
 }
@@ -1744,14 +1753,35 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_ncols(
     });
 }
 
+template <int ncols_dst>
+static void mul_mat_vec_pq2_0_q8_1_sycl_v5n(
+        const void * vx, const void * vy, float * dst,
+        const int ncols, const int nrows,
+        const int stride_col_y, const int stride_col_dst,
+        dpct::queue_ptr stream) {
+    const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
+    const sycl::range<3> block_nums(1, 1, block_num_y);
+    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, ncols_dst>(
+                    vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, item_ct1);
+            });
+    });
+}
+
 static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         const void * vx, const void * vy, float * dst,
         const int ncols, const int nrows, const int ncols_dst,
         const int stride_col_y, const int stride_col_dst,
         dpct::queue_ptr stream) {
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl_ncols<1>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
-        case 2: mul_mat_vec_pq2_0_q8_1_sycl_ncols<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // v5b k-parallel kernel
+        case 2: mul_mat_vec_pq2_0_q8_1_sycl_v5n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 5: mul_mat_vec_pq2_0_q8_1_sycl_ncols<5>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
