@@ -1759,6 +1759,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v5n(
         const int ncols, const int nrows,
         const int stride_col_y, const int stride_col_dst,
         dpct::queue_ptr stream) {
+    GGML_SYCL_DEBUG("Calling pq2_0 v5n<%d> nrows=%d ncols=%d\n", ncols_dst, nrows, ncols);
     const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
     const sycl::range<3> block_nums(1, 1, block_num_y);
     const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
