@@ -1572,7 +1572,11 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v6(
         for (int c = 0; c < qk / QK8_1; ++c) {
             #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                tmp[j] += ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+                float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+                if (lanedbg2 && row == 0 && j == 0 && ok) {
+                    lanedbg2[b * 4 + c] = dv;
+                }
+                tmp[j] += dv;
             }
         }
     }
@@ -1629,7 +1633,7 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         const void * __restrict__ vx, const void * __restrict__ vy,
         float * __restrict__ dst, const int ncols, const int nrows,
         const int stride_col_y, const int stride_col_dst,
-        const sycl::nd_item<3> & item_ct1, float * lanedbg = nullptr) {
+        const sycl::nd_item<3> & item_ct1, float * lanedbg = nullptr, float * lanedbg2 = nullptr) {
 
     const int lane  = item_ct1.get_local_id(2);
     const int warp  = item_ct1.get_local_id(1);                       // y-dim = warp index
@@ -1657,7 +1661,11 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         for (int c = 0; c < qk / QK8_1; ++c) {         // 4 chunks
             #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                tmp[j] += ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+                float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+                if (lanedbg2 && row == 0 && j == 0 && ok) {
+                    lanedbg2[b * 4 + c] = dv;
+                }
+                tmp[j] += dv;
             }
         }
     }
@@ -1786,6 +1794,7 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
     const sycl::range<3> block_dims(1, 1, WARP_SIZE);
     static float * lanedbg = nullptr;
     static bool dbg_init = false;
+    static bool dbg_init2 = false;
     if (!dbg_init) {
         dbg_init = true;
         const char * e = getenv("GGML_SYCL_PQ2_LANEDBG");
@@ -1794,13 +1803,30 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
         }
     }
     float * const lanedbg_local = lanedbg;
+    static float * lanedbg2 = nullptr;
+    if (!dbg_init2) {
+        dbg_init2 = true;
+        if (lanedbg) lanedbg2 = sycl::malloc_device<float>(4096, *stream);
+    }
+    float * const lanedbg2_local = lanedbg2;
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local, lanedbg2_local);
             });
     });
+    if (lanedbg2) {
+        static bool dumped2 = false;
+        if (!dumped2) {
+            dumped2 = true;
+            std::vector<float> h2(4096);
+            stream->memcpy(h2.data(), lanedbg2, h2.size()*4).wait();
+            FILE * f2 = fopen("C:\\llama.cpp-build-sycl\\pq2_chunks.bin", "wb");
+            if (f2) { fwrite(h2.data(), 4, h2.size(), f2); fclose(f2); }
+            printf("PQ2_CHUNKDBG_DONE\n");
+        }
+    }
     if (lanedbg) {
         static bool dumped = false;
         if (!dumped) {
@@ -1850,13 +1876,30 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
         }
     }
     float * const lanedbg_local = lanedbg;
+    static float * lanedbg2 = nullptr;
+    if (!dbg_init2) {
+        dbg_init2 = true;
+        if (lanedbg) lanedbg2 = sycl::malloc_device<float>(4096, *stream);
+    }
+    float * const lanedbg2_local = lanedbg2;
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local, lanedbg2_local);
             });
     });
+    if (lanedbg2) {
+        static bool dumped2 = false;
+        if (!dumped2) {
+            dumped2 = true;
+            std::vector<float> h2(4096);
+            stream->memcpy(h2.data(), lanedbg2, h2.size()*4).wait();
+            FILE * f2 = fopen("C:\\llama.cpp-build-sycl\\pq2_chunks.bin", "wb");
+            if (f2) { fwrite(h2.data(), 4, h2.size(), f2); fclose(f2); }
+            printf("PQ2_CHUNKDBG_DONE\n");
+        }
+    }
     if (lanedbg) {
         static bool dumped = false;
         if (!dumped) {
