@@ -1843,6 +1843,31 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_ncols(
 }
 
 template <int ncols_dst>
+static void mul_mat_vec_pq2_0_q8_1_sycl_v6n(
+        const void * vx, const void * vy, float * dst,
+        const int ncols, const int nrows,
+        const int stride_col_y, const int stride_col_dst,
+        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const int rows_per_warp = 2;
+    const int total_warps = (nrows + rows_per_warp - 1) / rows_per_warp;
+    const int warps_per_grp = 8;
+    const int num_groups = (total_warps + warps_per_grp - 1) / warps_per_grp;
+    const sycl::range<3> block_nums(1, 1, num_groups);
+    const sycl::range<3> block_dims(1, warps_per_grp, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v6<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, ncols_dst>(
+                    vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, item_ct1);
+            });
+    });
+}
+
+template <int ncols_dst>
 static void mul_mat_vec_pq2_0_q8_1_sycl_v5n(
         const void * vx, const void * vy, float * dst,
         const int ncols, const int nrows,
@@ -1871,7 +1896,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         dpct::queue_ptr stream) {
     switch (ncols_dst) {
         case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // v5b k-parallel kernel
-        case 2: mul_mat_vec_pq2_0_q8_1_sycl_v5n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
+        case 2: mul_mat_vec_pq2_0_q8_1_sycl_v6n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 5: mul_mat_vec_pq2_0_q8_1_sycl_ncols<5>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
