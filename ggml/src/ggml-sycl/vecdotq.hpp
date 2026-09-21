@@ -1166,6 +1166,11 @@ vec_dot_pq2_0_q8_1_swar(const void *__restrict__ vbq,
     }
 
     const float d8 = bq8_1_chunk->ds[0];
+        {
+        static int ctr = 0;
+        if (ctr++ < 3) printf("[PQ2SWAR] iqs=%d qs0=%02x qs1=%02x d2=%g d8=%g sumi=%d\n",
+                              iqs, bq2_0->qs[0], bq2_0->qs[1], d2, d8, sumi);
+    }
     return d2 * d8 * sumi;
 }
 
