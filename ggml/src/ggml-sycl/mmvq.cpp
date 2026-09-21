@@ -1660,6 +1660,16 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
                 float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
                 if (lanedbg2 && row == 0 && j == 0 && ok) {
                     lanedbg2[b * 4 + c] = dv;
+                    if (b == 0 && c == 0) {
+                        const unsigned int * xw = (const unsigned int *) &x[0];
+                        const unsigned int * yw = (const unsigned int *) &y[0];
+                        for (int t = 0; t < 8; ++t) lanedbg2[1024 + t] = as_float(xw[t]);
+                        for (int t = 0; t < 9; ++t) lanedbg2[1032 + t] = as_float(yw[t]);
+                        lanedbg2[1044] = as_float((unsigned int)((size_t)x & 0xFFFFFFFF));
+                        lanedbg2[1045] = as_float((unsigned int)(((size_t)x >> 32) & 0xFFFFFFFF));
+                        lanedbg2[1046] = as_float((unsigned int)((size_t)y & 0xFFFFFFFF));
+                        lanedbg2[1047] = as_float((unsigned int)(((size_t)y >> 32) & 0xFFFFFFFF));
+                    }
                 }
                 tmp[j] += dv;
             }
