@@ -1572,7 +1572,7 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v6(
         for (int c = 0; c < qk / QK8_1; ++c) {
             #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                tmp[j] += ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+                tmp[j] += ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0], c) : 0.0f;
             }
         }
     }
@@ -1657,7 +1657,7 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         for (int c = 0; c < qk / QK8_1; ++c) {         // 4 chunks
             #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
-                float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+                float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0], c) : 0.0f;
                 if (lanedbg2 && row == 0 && j == 0 && ok) {
                     lanedbg2[b * 4 + c] = dv;
                     if (b == 0) {
