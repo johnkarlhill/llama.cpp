@@ -1529,6 +1529,92 @@ static void mul_mat_vec_pq2_0_dbg_template(const void * __restrict__ vx,
 
 
 
+
+// v6: PQ2_0 MMVQ, 2 rows per warp (halves redundant q8_1 L2 traffic).
+// Template+v5 both re-read the full y vector once per output row: 111MB of L2 traffic
+// per 17408x5120 matmul vs 25MB of weights. v6: lanes 0-15 stream row A's k-blocks,
+// lanes 16-31 row B's; paired lanes (L, L+16) load identical y chunks -> L1 hit.
+// Each lane computes the complete 4-chunk dot for one k-block of its row; two
+// 16-wide sub-group reductions finish each row.
+template <int qk, int qi, typename block_q_t, int vdr,
+          vec_dot_q_sycl_t vec_dot_q_sycl, int ncols_dst>
+static __dpct_inline__ void mul_mat_vec_pq2_0_v6(
+        const void * __restrict__ vx, const void * __restrict__ vy,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const int stride_col_y, const int stride_col_dst,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2);
+    const int warp  = item_ct1.get_local_id(1);
+    const int row0  = (item_ct1.get_group(2) * item_ct1.get_local_range(1) + warp) * 2;
+    const int sgl   = item_ct1.get_sub_group().get_group_linear_id();
+
+    const block_q_t  * x = (const block_q_t *)  vx;
+    const block_q8_1 * y = (const block_q8_1 *) vy;
+
+    const int blocks_per_row = ncols / qk;
+    const int sub    = lane / 16;                       // 0 = row A, 1 = row B
+    const int slane  = lane % 16;                       // lane within row's 16-lane group
+
+    const int row   = row0 + sub;
+    float tmp[ncols_dst] = {0.0f};
+
+    const int padded = (blocks_per_row + 15) / 16 * 16;
+    for (int i = 0; i < padded; i += 16) {
+        const int b    = i + slane;
+        const bool ok  = (b < blocks_per_row) && (row < nrows);
+        const int ibx  = row * blocks_per_row + (ok ? b : 0);
+        const int iby0 = (ok ? b : 0) * (qk / QK8_1);
+
+        #pragma unroll
+        for (int c = 0; c < qk / QK8_1; ++c) {
+            #pragma unroll
+            for (int j = 0; j < ncols_dst; ++j) {
+                tmp[j] += ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
+            }
+        }
+    }
+
+    // reduce across the 16 lanes of each half
+    #pragma unroll
+    for (int j = 0; j < ncols_dst; ++j) {
+        #pragma unroll
+        for (int mask = 8; mask > 0; mask >>= 1) {
+            tmp[j] += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp[j], mask, 16);
+        }
+    }
+
+    if (slane == 0 && row < nrows) {
+        #pragma unroll
+        for (int j = 0; j < ncols_dst; ++j) {
+            dst[j * stride_col_dst + row] = tmp[j];
+        }
+    }
+}
+
+static void mul_mat_vec_pq2_0_q8_1_sycl_v6(const void * vx, const void * vy,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const int rows_per_warp = 2;
+    const int total_warps = (nrows + rows_per_warp - 1) / rows_per_warp;
+    const int warps_per_grp = 8;
+    const int num_groups = (total_warps + warps_per_grp - 1) / warps_per_grp;
+    const sycl::range<3> block_nums(1, 1, num_groups);
+    const sycl::range<3> block_dims(1, warps_per_grp, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v6<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(
+                    vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
+            });
+    });
+}
+
 // v5: PQ2_0 MMVQ k-parallel kernel (tg path, ncols_dst == 1).
 // Template redundancy analysis: qi=4, vdr=1 -> 32 lanes compute only 4 unique chunks
 // per x-block (8x redundant dp4a), warp covers 8 blocks/iter with strided 36B loads.
@@ -3597,6 +3683,8 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream);   // v5 (base fn)
     } else if (which == 4) {
         mul_mat_vec_pq2_0_q8_1_sycl_v5n<2>(vx, vy, dst, ncols, nrows, ncols/QK8_1, ncols, stream);
+    } else if (which == 5) {
+        mul_mat_vec_pq2_0_q8_1_sycl_v6(vx, vy, dst, ncols, nrows, stream);
     } else {
         const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
         const sycl::range<3> block_nums(1, 1, block_num_y);
