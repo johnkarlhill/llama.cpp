@@ -1793,11 +1793,12 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
             lanedbg = sycl::malloc_device<float>(8 * 8 * WARP_SIZE, *stream);
         }
     }
+    float * const lanedbg_local = lanedbg;
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local);
             });
     });
     if (lanedbg) {
@@ -1848,11 +1849,12 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
             lanedbg = sycl::malloc_device<float>(8 * 8 * WARP_SIZE, *stream);
         }
     }
+    float * const lanedbg_local = lanedbg;
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local);
             });
     });
     if (lanedbg) {
