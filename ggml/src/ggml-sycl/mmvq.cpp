@@ -1663,12 +1663,12 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
                     if (b == 0 && c == 0) {
                         const unsigned int * xw = (const unsigned int *) &x[0];
                         const unsigned int * yw = (const unsigned int *) &y[0];
-                        for (int t = 0; t < 8; ++t) lanedbg2[1024 + t] = as_float(xw[t]);
-                        for (int t = 0; t < 9; ++t) lanedbg2[1032 + t] = as_float(yw[t]);
-                        lanedbg2[1044] = as_float((unsigned int)((size_t)x & 0xFFFFFFFF));
-                        lanedbg2[1045] = as_float((unsigned int)(((size_t)x >> 32) & 0xFFFFFFFF));
-                        lanedbg2[1046] = as_float((unsigned int)((size_t)y & 0xFFFFFFFF));
-                        lanedbg2[1047] = as_float((unsigned int)(((size_t)y >> 32) & 0xFFFFFFFF));
+                        for (int t = 0; t < 8; ++t) lanedbg2[1024 + t] = sycl::bit_cast<float>(xw[t]);
+                        for (int t = 0; t < 9; ++t) lanedbg2[1032 + t] = sycl::bit_cast<float>(yw[t]);
+                        lanedbg2[1044] = sycl::bit_cast<float>((unsigned int)((size_t)x & 0xFFFFFFFF));
+                        lanedbg2[1045] = sycl::bit_cast<float>((unsigned int)(((size_t)x >> 32) & 0xFFFFFFFF));
+                        lanedbg2[1046] = sycl::bit_cast<float>((unsigned int)((size_t)y & 0xFFFFFFFF));
+                        lanedbg2[1047] = sycl::bit_cast<float>((unsigned int)(((size_t)y >> 32) & 0xFFFFFFFF));
                     }
                 }
                 tmp[j] += dv;
