@@ -1542,9 +1542,9 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         float * __restrict__ dst, const int ncols, const int nrows,
         const sycl::nd_item<3> & item_ct1) {
 
-    const int lane  = item_ct1.get_local_id(2) % WARP_SIZE;
-    const int warp  = item_ct1.get_local_id(2) / WARP_SIZE;
-    const int row   = item_ct1.get_group(2) * (WARP_SIZE/32) + warp;  // 1 row/warp (MMV_Y=1)
+    const int lane  = item_ct1.get_local_id(2);
+    const int warp  = item_ct1.get_local_id(1);                       // y-dim = warp index
+    const int row   = item_ct1.get_group(2) * item_ct1.get_local_range(1) + warp;
 
     if (row >= nrows) return;
 
@@ -1709,9 +1709,9 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
                                         const int nrows,
                                         dpct::queue_ptr stream) {
     GGML_ASSERT(ncols % QK_PQ2_0 == 0);
-    // v5: 1 warp per work-group, one matrix row per warp
-    const sycl::range<3> block_nums(1, 1, nrows);
-    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+    const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
+    const sycl::range<3> block_nums(1, 1, block_num_y);
+    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
 
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
