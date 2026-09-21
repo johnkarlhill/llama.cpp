@@ -1660,7 +1660,7 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
                 float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0 + c], c) : 0.0f;
                 if (lanedbg2 && row == 0 && j == 0 && ok) {
                     lanedbg2[b * 4 + c] = dv;
-                    if (b == 0 && c == 0) {
+                    if (b == 0) {
                         const unsigned int * xw = (const unsigned int *) &x[0];
                         const unsigned int * yw = (const unsigned int *) &y[0];
                         for (int t = 0; t < 8; ++t) lanedbg2[1024 + t] = sycl::bit_cast<float>(xw[t]);
@@ -1669,14 +1669,13 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
                         lanedbg2[1045] = sycl::bit_cast<float>((unsigned int)(((size_t)x >> 32) & 0xFFFFFFFF));
                         lanedbg2[1046] = sycl::bit_cast<float>((unsigned int)((size_t)y & 0xFFFFFFFF));
                         lanedbg2[1047] = sycl::bit_cast<float>((unsigned int)(((size_t)y >> 32) & 0xFFFFFFFF));
-                        // step-by-step chunk0 recompute
+                        // step-by-step chunk recompute (per chunk c of block 0)
                         const block_pq2_0 * bx = &x[0];
                         const block_q8_1 * by = &y[0];
                         const float d2 = bx->d;
                         const float d8 = by->ds[0];
-                        lanedbg2[1101] = d8;
                         int sumi_run = 0;
-                        const uint64_t packed = *reinterpret_cast<const uint64_t *>(bx->qs + 0);
+                        const uint64_t packed = *reinterpret_cast<const uint64_t *>(bx->qs + c * 8);
                         for (int jj = 0; jj < 4; ++jj) {
                             const uint16_t qs16 = (uint16_t)(packed >> (16 * jj));
                             int qx = 0, qy = 0;
@@ -1688,16 +1687,12 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
                             }
                             const int u = *reinterpret_cast<const int *>(by->qs + 8 * jj);
                             const int v = *reinterpret_cast<const int *>(by->qs + 8 * jj + 4);
-                            lanedbg2[1110 + jj] = sycl::bit_cast<float>((unsigned int)qs16);
-                            lanedbg2[1120 + jj] = sycl::bit_cast<float>((unsigned int)qx);
-                            lanedbg2[1130 + jj] = sycl::bit_cast<float>((unsigned int)qy);
-                            lanedbg2[1140 + jj] = sycl::bit_cast<float>((unsigned int)u);
-                            lanedbg2[1150 + jj] = sycl::bit_cast<float>((unsigned int)v);
                             sumi_run = dpct::dp4a(u, qx, sumi_run);
                             sumi_run = dpct::dp4a(v, qy, sumi_run);
-                            lanedbg2[1160 + jj] = sycl::bit_cast<float>((unsigned int)sumi_run);
+                            lanedbg2[1200 + c * 8 + jj] = sycl::bit_cast<float>((unsigned int)sumi_run);
                         }
-                        lanedbg2[1170] = d2 * d8 * sumi_run;
+                        lanedbg2[1200 + c * 8 + 4] = d2 * d8 * sumi_run;
+                        lanedbg2[1200 + c * 8 + 5] = d8;
                     }
                 }
                 tmp[j] += dv;
