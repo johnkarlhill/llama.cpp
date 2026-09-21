@@ -1629,7 +1629,7 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         const void * __restrict__ vx, const void * __restrict__ vy,
         float * __restrict__ dst, const int ncols, const int nrows,
         const int stride_col_y, const int stride_col_dst,
-        const sycl::nd_item<3> & item_ct1, float * lanedbg = nullptr, float * lanedbg2 = nullptr) {
+        const sycl::nd_item<3> & item_ct1) {
 
     const int lane  = item_ct1.get_local_id(2);
     const int warp  = item_ct1.get_local_id(1);                       // y-dim = warp index
@@ -1658,54 +1658,11 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
             #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
                 float dv = ok ? vec_dot_q_sycl(&x[ibx], &y[j * stride_col_y + iby0], c) : 0.0f;
-                if (lanedbg2 && row == 0 && j == 0 && ok) {
-                    lanedbg2[b * 4 + c] = dv;
-                    if (b == 0) {
-                        const unsigned int * xw = (const unsigned int *) &x[0];
-                        const unsigned int * yw = (const unsigned int *) &y[0];
-                        for (int t = 0; t < 8; ++t) lanedbg2[1024 + t] = sycl::bit_cast<float>(xw[t]);
-                        for (int t = 0; t < 9; ++t) lanedbg2[1032 + t] = sycl::bit_cast<float>(yw[t]);
-                        lanedbg2[1044] = sycl::bit_cast<float>((unsigned int)((size_t)x & 0xFFFFFFFF));
-                        lanedbg2[1045] = sycl::bit_cast<float>((unsigned int)(((size_t)x >> 32) & 0xFFFFFFFF));
-                        lanedbg2[1046] = sycl::bit_cast<float>((unsigned int)((size_t)y & 0xFFFFFFFF));
-                        lanedbg2[1047] = sycl::bit_cast<float>((unsigned int)(((size_t)y >> 32) & 0xFFFFFFFF));
-                        // step-by-step chunk recompute (per chunk c of block 0)
-                        const block_pq2_0 * bx = &x[0];
-                        const block_q8_1 * by = &y[0];
-                        const float d2 = bx->d;
-                        const float d8 = by->ds[0];
-                        int sumi_run = 0;
-                        const uint64_t packed = *reinterpret_cast<const uint64_t *>(bx->qs + c * 8);
-                        for (int jj = 0; jj < 4; ++jj) {
-                            const uint16_t qs16 = (uint16_t)(packed >> (16 * jj));
-                            int qx = 0, qy = 0;
-                            for (int ii = 0; ii < 4; ++ii) {
-                                const int code_lo = (qs16 >> (2 * ii)) & 3;
-                                const int code_hi = (qs16 >> (2 * ii + 8)) & 3;
-                                qx |= ((code_lo - 1) & 0xFF) << (8 * ii);
-                                qy |= ((code_hi - 1) & 0xFF) << (8 * ii);
-                            }
-                            const int u = *reinterpret_cast<const int *>(by->qs + 8 * jj);
-                            const int v = *reinterpret_cast<const int *>(by->qs + 8 * jj + 4);
-                            sumi_run = dpct::dp4a(u, qx, sumi_run);
-                            sumi_run = dpct::dp4a(v, qy, sumi_run);
-                            lanedbg2[1200 + c * 8 + jj] = sycl::bit_cast<float>((unsigned int)sumi_run);
-                        }
-                        lanedbg2[1200 + c * 8 + 4] = d2 * d8 * sumi_run;
-                        lanedbg2[1200 + c * 8 + 5] = d8;
-                    }
-                }
                 tmp[j] += dv;
             }
         }
     }
 
-    if (lanedbg && row < 8) {
-        #pragma unroll
-        for (int j = 0; j < ncols_dst; ++j) {
-            lanedbg[(row * 8 + j) * WARP_SIZE + lane] = tmp[j];
-        }
-    }
     // sum across lanes = sum across k-blocks
     #pragma unroll
     for (int j = 0; j < ncols_dst; ++j) {
@@ -1822,52 +1779,13 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
     GGML_ASSERT(ncols % QK_PQ2_0 == 0);
     const sycl::range<3> block_nums(1, 1, nrows);
     const sycl::range<3> block_dims(1, 1, WARP_SIZE);
-    static float * lanedbg = nullptr;
-    static bool dbg_init = false;
-    static bool dbg_init2 = false;
-    if (!dbg_init) {
-        dbg_init = true;
-        const char * e = getenv("GGML_SYCL_PQ2_LANEDBG");
-        if (e && e[0] == '1') {
-            lanedbg = sycl::malloc_device<float>(8 * 8 * WARP_SIZE, *stream);
-        }
-    }
-    float * const lanedbg_local = lanedbg;
-    static float * lanedbg2 = nullptr;
-    if (!dbg_init2) {
-        dbg_init2 = true;
-        if (lanedbg) lanedbg2 = sycl::malloc_device<float>(4096, *stream);
-    }
-    float * const lanedbg2_local = lanedbg2;
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local, lanedbg2_local);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
             });
     });
-    if (lanedbg2) {
-        static bool dumped2 = false;
-        if (!dumped2) {
-            dumped2 = true;
-            std::vector<float> h2(4096);
-            stream->memcpy(h2.data(), lanedbg2, h2.size()*4).wait();
-            FILE * f2 = fopen("C:\\llama.cpp-build-sycl\\pq2_chunks.bin", "wb");
-            if (f2) { fwrite(h2.data(), 4, h2.size(), f2); fclose(f2); }
-            printf("PQ2_CHUNKDBG_DONE\n");
-        }
-    }
-    if (lanedbg) {
-        static bool dumped = false;
-        if (!dumped) {
-            dumped = true;
-            std::vector<float> h(8 * 8 * WARP_SIZE);
-            stream->memcpy(h.data(), lanedbg, h.size()*4).wait();
-            FILE * f = fopen("C:\\llama.cpp-build-sycl\\pq2_lanes.bin", "wb");
-            if (f) { fwrite(h.data(), 4, h.size(), f); fclose(f); }
-            printf("PQ2_LANEDBG_DONE\n");
-        }
-    }
 }
 
 static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
@@ -1896,52 +1814,13 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
     const sycl::range<3> block_nums(1, 1, block_num_y);
     const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
 
-    static float * lanedbg = nullptr;
-    static bool dbg_init = false;
-    if (!dbg_init) {
-        dbg_init = true;
-        const char * e = getenv("GGML_SYCL_PQ2_LANEDBG");
-        if (e && e[0] == '1') {
-            lanedbg = sycl::malloc_device<float>(8 * 8 * WARP_SIZE, *stream);
-        }
-    }
-    float * const lanedbg_local = lanedbg;
-    static float * lanedbg2 = nullptr;
-    static bool dbg_init2 = false;
-    if (!dbg_init2) {
-        dbg_init2 = true;
-        if (lanedbg) lanedbg2 = sycl::malloc_device<float>(4096, *stream);
-    }
-    float * const lanedbg2_local = lanedbg2;
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg_local, lanedbg2_local);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
             });
     });
-    if (lanedbg2) {
-        static bool dumped2 = false;
-        if (!dumped2) {
-            dumped2 = true;
-            std::vector<float> h2(4096);
-            stream->memcpy(h2.data(), lanedbg2, h2.size()*4).wait();
-            FILE * f2 = fopen("C:\\llama.cpp-build-sycl\\pq2_chunks.bin", "wb");
-            if (f2) { fwrite(h2.data(), 4, h2.size(), f2); fclose(f2); }
-            printf("PQ2_CHUNKDBG_DONE\n");
-        }
-    }
-    if (lanedbg) {
-        static bool dumped = false;
-        if (!dumped) {
-            dumped = true;
-            std::vector<float> h(8 * 8 * WARP_SIZE);
-            stream->memcpy(h.data(), lanedbg, h.size()*4).wait();
-            FILE * f = fopen("C:\\llama.cpp-build-sycl\\pq2_lanes.bin", "wb");
-            if (f) { fwrite(h.data(), 4, h.size(), f); fclose(f); }
-            printf("PQ2_LANEDBG_DONE\n");
-        }
-    }
 }
 
 // template-path fallback (GGML_SYCL_PQ2_V6=0): upstream generic ncols kernel
