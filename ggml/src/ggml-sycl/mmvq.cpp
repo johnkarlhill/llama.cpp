@@ -1577,6 +1577,14 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v6(
         }
     }
 
+    // DEBUG: lane 16 writes PRE-reduce partial (before the butterfly), so
+    // a nonzero odd row here proves compute works and the reduce is broken
+    // DEBUG: lane 16 writes PRE-reduce partial (before the butterfly), so
+    // a nonzero odd row here proves compute works and the reduce is broken
+    if (lane == 16 && row < nrows) {
+        dst[row] = 42.0f + tmp[0];  // marker: proves lane16 executed
+    }
+
     // reduce across the 16 lanes of each half
     #pragma unroll
     for (int j = 0; j < ncols_dst; ++j) {
@@ -1586,12 +1594,6 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v6(
         }
     }
 
-    if (lane == 16 && row < nrows) {
-        // DEBUG: lane 16 writes PRE-reduce partial (its own slane-0 view of
-        // row B) — if odd rows show block-0-only magnitude, compute works
-        // and the reduce is broken; if 0, vec_dot returned 0.
-        dst[row] = tmp[0];
-    }
     if (slane == 0 && row < nrows) {
         #pragma unroll
         for (int j = 0; j < ncols_dst; ++j) {
@@ -1622,6 +1624,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v6(const void * vx, const void * vy,
             });
     });
 }
+
 
 // v5: PQ2_0 MMVQ k-parallel kernel (tg path, ncols_dst == 1).
 // Template redundancy analysis: qi=4, vdr=1 -> 32 lanes compute only 4 unique chunks
@@ -1693,6 +1696,30 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v5(const void * vx, const void * vy,
     GGML_ASSERT(ncols % QK_PQ2_0 == 0);
     const sycl::range<3> block_nums(1, 1, nrows);
     const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(
+                    vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
+            });
+    });
+}
+
+// v7: v5 body (1 row/warp, full-warp reduce, proven) launched with 8 warps
+// per group for occupancy. v6's 2-rows-per-warp lane split never executes
+// lanes 16-31 on BMG (root cause TBD), so rows-per-warp split is abandoned.
+static void mul_mat_vec_pq2_0_q8_1_sycl_v7(const void * vx, const void * vy,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const int warps_per_grp = 8;
+    const int num_groups = (nrows + warps_per_grp - 1) / warps_per_grp;
+    const sycl::range<3> block_nums(1, 1, num_groups);
+    const sycl::range<3> block_dims(1, warps_per_grp, WARP_SIZE);
 
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
@@ -3792,6 +3819,8 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_sycl_v5n<2>(vx, vy, dst, ncols, nrows, ncols/QK8_1, ncols, stream);
     } else if (which == 5) {
         mul_mat_vec_pq2_0_q8_1_sycl_v6(vx, vy, dst, ncols, nrows, stream);
+    } else if (which == 7) {
+        mul_mat_vec_pq2_0_q8_1_sycl_v7(vx, vy, dst, ncols, nrows, stream);
     } else {
         const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
         const sycl::range<3> block_nums(1, 1, block_num_y);

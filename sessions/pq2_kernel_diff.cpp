@@ -167,8 +167,8 @@ int main() {
         float * tdo = (float *) sycl::malloc_device(TN * sizeof(float), q);
         q.memcpy(tdx, twx.data(), twx.size() * sizeof(block_pq2_0_dbg)).wait();
         q.memcpy(tdy, twy.data(), twy.size() * sizeof(block_q8_1_dbg)).wait();
-        for (int w = 1; w <= 5; ++w) {
-            const char * nm = w==1 ? "template" : (w==2 ? "v4" : (w==3 ? "v5" : (w==4 ? "v5n2" : "v6")));
+        for (int w = 1; w <= 7; ++w) { if (w==6) continue;
+            const char * nm = w==1 ? "template" : (w==2 ? "v4" : (w==3 ? "v5" : (w==4 ? "v5n2" : (w==5 ? "v6" : "v7"))));
             run(tdx, tdy, tdo, TC, TN, w, (uintptr_t)&q); q.wait();   // warmup
             auto t0 = std::chrono::steady_clock::now();
             const int ITERS = 20;
@@ -224,7 +224,7 @@ int main() {
     q.memset(d1, 0, NROWS * sizeof(float) + 64 * 1024).wait();
     q.memset(d2, 0, NROWS * sizeof(float) + 64 * 1024).wait();
 
-    run(dx, dy, d1, NCOLS, NROWS, 0, (uintptr_t)&q);   // v3
+    run(dx, dy, d1, NCOLS, NROWS, which_v, (uintptr_t)&q);  // variant
     q.wait();
     run(dx, dy, d2, NCOLS, NROWS, 1, (uintptr_t)&q);   // template
     q.wait();
