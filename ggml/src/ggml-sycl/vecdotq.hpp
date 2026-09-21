@@ -1146,14 +1146,14 @@ vec_dot_pq2_0_q8_1_swar(const void *__restrict__ vbq,
         // Since only 8 values, we can compute all at once:
         uint64_t expanded = 0;
         // These 8 statements will be constant-folded by compiler into SIMD
-        expanded |= (uint64_t)(((q >>  0) & 3) - 1) <<  0;
-        expanded |= (uint64_t)(((q >>  2) & 3) - 1) <<  8;
-        expanded |= (uint64_t)(((q >>  4) & 3) - 1) << 16;
-        expanded |= (uint64_t)(((q >>  6) & 3) - 1) << 24;
-        expanded |= (uint64_t)(((q >>  8) & 3) - 1) << 32;
-        expanded |= (uint64_t)(((q >> 10) & 3) - 1) << 40;
-        expanded |= (uint64_t)(((q >> 12) & 3) - 1) << 48;
-        expanded |= (uint64_t)(((q >> 14) & 3) - 1) << 56;
+        expanded |= (uint64_t)((((q >>  0) & 3) - 1) & 0xFF) <<  0;
+        expanded |= (uint64_t)((((q >>  2) & 3) - 1) & 0xFF) <<  8;
+        expanded |= (uint64_t)((((q >>  4) & 3) - 1) & 0xFF) << 16;
+        expanded |= (uint64_t)((((q >>  6) & 3) - 1) & 0xFF) << 24;
+        expanded |= (uint64_t)((((q >>  8) & 3) - 1) & 0xFF) << 32;
+        expanded |= (uint64_t)((((q >> 10) & 3) - 1) & 0xFF) << 40;
+        expanded |= (uint64_t)((((q >> 12) & 3) - 1) & 0xFF) << 48;
+        expanded |= (uint64_t)((((q >> 14) & 3) - 1) & 0xFF) << 56;
 
         int qx = (int)(expanded & 0xFFFFFFFF);
         int qy = (int)((expanded >> 32) & 0xFFFFFFFF);
