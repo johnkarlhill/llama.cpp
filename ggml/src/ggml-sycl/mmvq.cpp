@@ -1,4 +1,33 @@
-#include "mmvq.hpp"
+
+                        // step-by-step chunk0 recompute
+                        const block_pq2_0 * bx = &x[0];
+                        const block_q8_1 * by = &y[0];
+                        const float d2 = bx->d;
+                        const float d8 = by->ds[0];
+                        lanedbg2[1101] = d8;
+                        int sumi_run = 0;
+                        const uint64_t packed = *reinterpret_cast<const uint64_t *>(bx->qs + 0);
+                        for (int jj = 0; jj < 4; ++jj) {
+                            const uint16_t qs16 = (uint16_t)(packed >> (16 * jj));
+                            int qx = 0, qy = 0;
+                            for (int ii = 0; ii < 4; ++ii) {
+                                const int code_lo = (qs16 >> (2 * ii)) & 3;
+                                const int code_hi = (qs16 >> (2 * ii + 8)) & 3;
+                                qx |= ((code_lo - 1) & 0xFF) << (8 * ii);
+                                qy |= ((code_hi - 1) & 0xFF) << (8 * ii);
+                            }
+                            const int u = *reinterpret_cast<const int *>(by->qs + 8 * jj);
+                            const int v = *reinterpret_cast<const int *>(by->qs + 8 * jj + 4);
+                            lanedbg2[1110 + jj] = sycl::bit_cast<float>((unsigned int)qs16);
+                            lanedbg2[1120 + jj] = sycl::bit_cast<float>((unsigned int)qx);
+                            lanedbg2[1130 + jj] = sycl::bit_cast<float>((unsigned int)qy);
+                            lanedbg2[1140 + jj] = sycl::bit_cast<float>((unsigned int)u);
+                            lanedbg2[1150 + jj] = sycl::bit_cast<float>((unsigned int)v);
+                            sumi_run = dpct::dp4a(u, qx, sumi_run);
+                            sumi_run = dpct::dp4a(v, qy, sumi_run);
+                            lanedbg2[1160 + jj] = sycl::bit_cast<float>((unsigned int)sumi_run);
+                        }
+                        lanedbg2[1170] = d2 * d8 * sumi_run;#include "mmvq.hpp"
 #include <cstdio>
 #include <vector>
 
