@@ -1629,7 +1629,7 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         const void * __restrict__ vx, const void * __restrict__ vy,
         float * __restrict__ dst, const int ncols, const int nrows,
         const int stride_col_y, const int stride_col_dst,
-        const sycl::nd_item<3> & item_ct1) {
+        const sycl::nd_item<3> & item_ct1, float * lanedbg = nullptr) {
 
     const int lane  = item_ct1.get_local_id(2);
     const int warp  = item_ct1.get_local_id(1);                       // y-dim = warp index
@@ -1662,6 +1662,12 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v5(
         }
     }
 
+    if (lanedbg && row < 8) {
+        #pragma unroll
+        for (int j = 0; j < ncols_dst; ++j) {
+            lanedbg[(row * 8 + j) * WARP_SIZE + lane] = tmp[j];
+        }
+    }
     // sum across lanes = sum across k-blocks
     #pragma unroll
     for (int j = 0; j < ncols_dst; ++j) {
@@ -1778,13 +1784,33 @@ static void mul_mat_vec_pq2_0_q8_1_v4_sycl(const void * vx, const void * vy,
     GGML_ASSERT(ncols % QK_PQ2_0 == 0);
     const sycl::range<3> block_nums(1, 1, nrows);
     const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+    static float * lanedbg = nullptr;
+    static bool dbg_init = false;
+    if (!dbg_init) {
+        dbg_init = true;
+        const char * e = getenv("GGML_SYCL_PQ2_LANEDBG");
+        if (e && e[0] == '1') {
+            lanedbg = sycl::malloc_device<float>(8 * 8 * WARP_SIZE, *stream);
+        }
+    }
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg);
             });
     });
+    if (lanedbg) {
+        static bool dumped = false;
+        if (!dumped) {
+            dumped = true;
+            std::vector<float> h(8 * 8 * WARP_SIZE);
+            stream->memcpy(h.data(), lanedbg, h.size()*4).wait();
+            FILE * f = fopen("C:\\llama.cpp-build-sycl\\pq2_lanes.bin", "wb");
+            if (f) { fwrite(h.data(), 4, h.size(), f); fclose(f); }
+            printf("PQ2_LANEDBG_DONE\n");
+        }
+    }
 }
 
 static void mul_mat_vec_pq2_0_q8_1_v3_sycl(const void * vx, const void * vy,
@@ -1813,13 +1839,33 @@ static void mul_mat_vec_pq2_0_q8_1_sycl(const void * vx, const void * vy,
     const sycl::range<3> block_nums(1, 1, block_num_y);
     const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
 
+    static float * lanedbg = nullptr;
+    static bool dbg_init = false;
+    if (!dbg_init) {
+        dbg_init = true;
+        const char * e = getenv("GGML_SYCL_PQ2_LANEDBG");
+        if (e && e[0] == '1') {
+            lanedbg = sycl::malloc_device<float>(8 * 8 * WARP_SIZE, *stream);
+        }
+    }
     stream->submit([&](sycl::handler & cgh) {
         cgh.parallel_for(
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
+                mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0, VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(vx, vy, dst, ncols, nrows, 0, 0, item_ct1, lanedbg);
             });
     });
+    if (lanedbg) {
+        static bool dumped = false;
+        if (!dumped) {
+            dumped = true;
+            std::vector<float> h(8 * 8 * WARP_SIZE);
+            stream->memcpy(h.data(), lanedbg, h.size()*4).wait();
+            FILE * f = fopen("C:\\llama.cpp-build-sycl\\pq2_lanes.bin", "wb");
+            if (f) { fwrite(h.data(), 4, h.size(), f); fclose(f); }
+            printf("PQ2_LANEDBG_DONE\n");
+        }
+    }
 }
 
 // template-path fallback (GGML_SYCL_PQ2_V6=0): upstream generic ncols kernel
