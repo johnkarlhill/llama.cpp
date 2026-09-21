@@ -1586,6 +1586,12 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v6(
         }
     }
 
+    if (lane == 16 && row < nrows) {
+        // DEBUG: lane 16 writes PRE-reduce partial (its own slane-0 view of
+        // row B) — if odd rows show block-0-only magnitude, compute works
+        // and the reduce is broken; if 0, vec_dot returned 0.
+        dst[row] = tmp[0];
+    }
     if (slane == 0 && row < nrows) {
         #pragma unroll
         for (int j = 0; j < ncols_dst; ++j) {
