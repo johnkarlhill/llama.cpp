@@ -1873,6 +1873,101 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v9(const void * vx, const void * vy,
     });
 }
 
+// v10: v9 + FUSED quantize. Takes src1 as F32; each lane quantizes its chunk of the
+// activation row in registers (same math as quantize_q8_1: amax -> d = amax/127 ->
+// int8 round), so no separate quantize kernel runs between matvecs. 4 k-blocks per
+// lane per iteration (v9 MLP structure), SWAR weight decode.
+static __dpct_inline__ void mul_mat_vec_pq2_0_v10(
+        const void * __restrict__ vx, const float * __restrict__ yf,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2);
+    const int row   = item_ct1.get_group(2) * item_ct1.get_local_range(1)
+                    + item_ct1.get_local_id(1);
+
+    if (row >= nrows) return;
+
+    const block_pq2_0 * x = (const block_pq2_0 *) vx;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    float tmp = 0.0f;
+
+    const int group_stride = WARP_SIZE * 4;
+    const int padded = (blocks_per_row + group_stride - 1) / group_stride * group_stride;
+    for (int i0 = 0; i0 < padded; i0 += group_stride) {
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int b    = i0 + lane * 4 + k;
+            const bool ok  = b < blocks_per_row;
+            const int ibx  = row * blocks_per_row + (ok ? b : 0);
+            const float * ychunk = yf + (ok ? b : 0) * QK_PQ2_0;
+
+            float sumf = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+                if (!ok) break;
+                // ---- fused quantize of 32 activations (chunk c) ----
+                const int base = c * QK8_1;
+                float amax = 0.0f;
+                float av[QK8_1];
+                #pragma unroll
+                for (int e = 0; e < QK8_1; ++e) {
+                    av[e] = ychunk[base + e];
+                    amax = sycl::fmax(amax, sycl::fabs(av[e]));
+                }
+                // warp-wide amax: lane holds 32 elems? NO - each lane owns the whole
+                // chunk, so amax is already the full-chunk max (no exchange needed).
+                const float d  = (amax == 0.0f) ? 1.0f : amax / 127.0f;
+                const float id = (amax == 0.0f) ? 0.0f : 127.0f / amax;
+                int sumi = 0;
+                #pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    const uint16_t w0 = *(const uint16_t *)(x[ibx].qs + c*8 + j*2);
+                    int u = 0, qx = 0;
+                    #pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        const int cl = (((w0 >> (2*i)) & 3) - 1) & 0xFF;
+                        const int ch = (((w0 >> (2*(i+4))) & 3) - 1) & 0xFF;
+                        qx |= cl << (8*i);
+                        u  |= (((int)sycl::round(av[8*j + i]   * id)) & 0xFF) << (8*i);
+                        u  |= (((int)sycl::round(av[8*j + i+4] * id)) & 0xFF) << (8*(i+4));
+                    }
+                    sumi = dpct::dp4a(u, qx, sumi);
+                }
+                sumf += (amax == 0.0f ? 0.0f : d) * sumi;
+            }
+            tmp += ok ? sumf : 0.0f;
+        }
+    }
+
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        dst[row] = tmp;
+    }
+}
+
+// v10 launcher: 1 row/warp
+static void mul_mat_vec_pq2_0_q8_1_sycl_v10(const void * vx, const float * yf,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v10(vx, yf, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 // v4: PQ2_0 MMVQ with Q6_K-like access pattern (tg path, ncols_dst == 1).
 // 8 lanes per 128-elem block, 2 blocks per warp iteration:
 //   lane L in group g (g = L/8), block pair (2i + g):
@@ -3966,6 +4061,8 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_sycl_v8(vx, vy, dst, ncols, nrows, stream);
     } else if (which == 9) {
         mul_mat_vec_pq2_0_q8_1_sycl_v9(vx, vy, dst, ncols, nrows, stream);
+    } else if (which == 10) {
+        mul_mat_vec_pq2_0_q8_1_sycl_v10(vx, (const float *) vy, dst, ncols, nrows, stream);
     } else {
         const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
         const sycl::range<3> block_nums(1, 1, block_num_y);
