@@ -3310,7 +3310,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                 }
                 break;
             case GGML_TYPE_PQ2_0:
-                if (i == 0 && src1_ncols > 1 && src1_ncols <= 8) {
+                if (i == 0 && src1_ncols > 1 && src1_ncols <= 8 && getenv("GGML_SYCL_PQ2_NO_MMQ") == nullptr) {
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols ncols=%d\n", (int)src1_ncols);
