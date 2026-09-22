@@ -167,11 +167,11 @@ int main() {
         float * tdo = (float *) sycl::malloc_device(TN * sizeof(float), q);
         q.memcpy(tdx, twx.data(), twx.size() * sizeof(block_pq2_0_dbg)).wait();
         q.memcpy(tdy, twy.data(), twy.size() * sizeof(block_q8_1_dbg)).wait();
-        for (int w = 1; w <= 7; ++w) { if (w==6) continue;
-            const char * nm = w==1 ? "template" : (w==2 ? "v4" : (w==3 ? "v5" : (w==4 ? "v5n2" : (w==5 ? "v6" : "v7"))));
+        for (int w = 1; w <= 9; ++w) { if (w==6) continue;
+            const char * nm = w==1 ? "template" : (w==2 ? "v4" : (w==3 ? "v5" : (w==4 ? "v5n2" : (w==5 ? "v6" : (w==7 ? "v7" : (w==8 ? "v8" : "v9"))))));
             run(tdx, tdy, tdo, TC, TN, w, (uintptr_t)&q); q.wait();   // warmup
             auto t0 = std::chrono::steady_clock::now();
-            const int ITERS = 20;
+            const int ITERS = 200;
             for (int it = 0; it < ITERS; ++it) {
                 run(tdx, tdy, tdo, TC, TN, w, (uintptr_t)&q);
                 q.wait();

@@ -1,0 +1,18 @@
+{
+ "trace_file": "/tmp/pq2_b2_trace.log",
+ "model": "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+ "gen_rate_during_trace": "12.8 t/s (debug-logging tax)",
+ "hadamard_dense_mulmat_per_tok": 0,
+ "fwht_kernel_invocations": 301.0,
+ "pq2_matvec_per_tok": 434.4,
+ "pq2_single": 384.4,
+ "pq2_multicol_ncols2": 33.3,
+ "pq2_multicol_ncols4": 16.7,
+ "mul_mat_total_per_tok": 1444.5,
+ "ssm_conv_per_tok": 42.0,
+ "gated_delta_net_per_tok": 38.0,
+ "flash_attn_per_tok": 31.3,
+ "rope_per_tok": 62.7,
+ "dense_H_GMAC_per_tok": 0.28,
+ "note": "hadamard hint -> ggml_sycl_op_fwht fast path TAKEN; 301 FWHT-1024 launches/tok"
+}

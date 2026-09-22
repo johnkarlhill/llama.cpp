@@ -1,0 +1,31 @@
+{
+  "id": "ses_004d5cda5ffek5ijsJxSph3X76",
+  "projectID": "d37cae80432dbd1e8af71e7e4fa22e6fcaa5853c",
+  "agent": "orchestrator",
+  "model": {
+    "id": "deepseek-v4-pro",
+    "providerID": "deepseek",
+    "variant": "default"
+  },
+  "cost": 0.031425125000000005,
+  "tokens": {
+    "input": 43589,
+    "output": 1958,
+    "reasoning": 9051,
+    "cache": {
+      "read": 796160,
+      "write": 0
+    }
+  },
+  "time": {
+    "created": 1786625274458,
+    "updated": 1786625499199
+  },
+  "title": "Resume from latest handoff",
+  "location": {
+    "directory": "/home/johnk/projects/llama.cpp-sycl"
+  },
+  "export_note": "Raw API metadata. Handoff file is authoritative.",
+  "export_timestamp": "20260813075149",
+  "matched_how": "most recently updated main session (no parentID) in this project directory"
+}

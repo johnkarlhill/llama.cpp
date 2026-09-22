@@ -3330,7 +3330,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                 {
                     static const bool pq2_dump = getenv("GGML_SYCL_PQ2_DUMP") != nullptr
                         && getenv("GGML_SYCL_PQ2_DUMP")[0] == '1';
-                    if (pq2_dump && i == 0 && src1_ncols == 1 && pq2_dump_count < 3) {
+                    if (pq2_dump && i == 0 && src1_ncols == 1 && src0->ne[1] != 248320 && pq2_dump_count < 6) {
                         pq2_dump_count++;
                         char fn[128];
                         snprintf(fn, sizeof(fn), "C:\\llama.cpp-build-sycl\\pq2_dump_%d.bin", pq2_dump_count);
