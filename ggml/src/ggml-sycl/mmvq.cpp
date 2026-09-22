@@ -3322,10 +3322,10 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
-                    // v10: fused quantize+matvec (reads F32 activations, skips nothing
-                    // upstream yet — the pre-quantize kernel still runs until trait-gated)
-                    mul_mat_vec_pq2_0_q8_1_sycl_v10(src0_dd_i, (const float *) src1_ddf_i,
-                        dst_dd_i_bs, ne00, row_diff, stream);
+                    // A/B: v9 (pure SWAR MLP, reads pre-quantized q8_1) — v10 fused
+                    // parked until its quantize math is validated (MINI: returns 0)
+                    mul_mat_vec_pq2_0_q8_1_sycl_v9(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
+                        ne00, row_diff, stream);
                 }
                 {
                     static const bool pq2_dump = getenv("GGML_SYCL_PQ2_DUMP") != nullptr
