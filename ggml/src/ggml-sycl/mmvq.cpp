@@ -1732,6 +1732,86 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v7(const void * vx, const void * vy,
     });
 }
 
+// v5i: v5 body with ILP-2 k-block processing (2 blocks/lane/iter, stride 64).
+// Independent LUT/weight loads per pair hide global latency; reduce unchanged.
+static __dpct_inline__ void mul_mat_vec_pq2_0_v5i(
+        const void * __restrict__ vx, const void * __restrict__ vy,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const int stride_col_y, const int stride_col_dst,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2);
+    const int warp  = item_ct1.get_local_id(1);
+    const int row   = item_ct1.get_group(2) * item_ct1.get_local_range(1) + warp;
+
+    if (row >= nrows) return;
+
+    const block_pq2_0  * x = (const block_pq2_0 *)  vx;
+    const block_q8_1 * y = (const block_q8_1 *) vy;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    float tmp[ncols_dst] = {0.0f};
+
+    const int padded = (blocks_per_row + 2*WARP_SIZE - 1) / (2*WARP_SIZE) * (2*WARP_SIZE);
+    #pragma unroll 2
+    for (int i = 0; i < padded; i += 2*WARP_SIZE) {
+        const bool ok0 = (i + lane) < blocks_per_row;
+        const bool ok1 = (i + WARP_SIZE + lane) < blocks_per_row;
+        const int b0 = ok0 ? (i + lane) : 0;
+        const int b1 = ok1 ? (i + WARP_SIZE + lane) : 0;
+        const int ibx0 = row * blocks_per_row + b0;
+        const int ibx1 = row * blocks_per_row + b1;
+        const int iby0 = b0 * (QK_PQ2_0 / QK8_1);
+        const int iby1 = b1 * (QK_PQ2_0 / QK8_1);
+        #pragma unroll
+        for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+            #pragma unroll
+            for (int j = 0; j < ncols_dst; ++j) {
+                const float dv0 = ok0 ? vec_dot_pq2_0_q8_1_lut(&x[ibx0], &y[j * stride_col_y + iby0], c) : 0.0f;
+                const float dv1 = ok1 ? vec_dot_pq2_0_q8_1_lut(&x[ibx1], &y[j * stride_col_y + iby1], c) : 0.0f;
+                tmp[j] += dv0 + dv1;
+            }
+        }
+    }
+
+    #pragma unroll
+    for (int j = 0; j < ncols_dst; ++j) {
+        #pragma unroll
+        for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+            tmp[j] += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp[j], mask);
+        }
+    }
+
+    if (lane == 0) {
+        #pragma unroll
+        for (int j = 0; j < ncols_dst; ++j) {
+            dst[j * stride_col_dst + row] = tmp[j];
+        }
+    }
+}
+
+// v8 launcher: v5i body, 8 warps/group (native-friendly), 1 row/warp
+static void mul_mat_vec_pq2_0_q8_1_sycl_v8(const void * vx, const void * vy,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const int warps_per_grp = 8;
+    const int num_groups = (nrows + warps_per_grp - 1) / warps_per_grp;
+    const sycl::range<3> block_nums(1, 1, num_groups);
+    const sycl::range<3> block_dims(1, warps_per_grp, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v5i<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
+                                     VDR_PQ2_0_Q8_1_MMVQ, 1>(
+                    vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
+            });
+    });
+}
+
 // v4: PQ2_0 MMVQ with Q6_K-like access pattern (tg path, ncols_dst == 1).
 // 8 lanes per 128-elem block, 2 blocks per warp iteration:
 //   lane L in group g (g = L/8), block pair (2i + g):
@@ -1961,7 +2041,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         return;
     }
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl_v7(vx, vy, dst, ncols, nrows, stream); break;  // occ test: 8 warps/grp
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl_v8(vx, vy, dst, ncols, nrows, stream); break;  // occ test C: ILP-2 + 8 warps/grp
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_v6n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
