@@ -1726,7 +1726,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v7(const void * vx, const void * vy,
             sycl::nd_range<3>(block_nums * block_dims, block_dims),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
                 mul_mat_vec_pq2_0_v5<QK_PQ2_0, QI_PQ2_0, block_pq2_0,
-                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_swar, 1>(
+                                     VDR_PQ2_0_Q8_1_MMVQ, vec_dot_pq2_0_q8_1_lut, 1>(
                     vx, vy, dst, ncols, nrows, 0, 0, item_ct1);
             });
     });
@@ -1961,7 +1961,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         return;
     }
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // v6 via base fn
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl_v7(vx, vy, dst, ncols, nrows, stream); break;  // occ test: 8 warps/grp
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_v6n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
