@@ -2032,7 +2032,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         return;
     }
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl_v8(vx, vy, dst, ncols, nrows, stream); break;  // occ test C: ILP-2 v8
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // baseline v5+lut (v8 ILP-2 failed, kept for reference)
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_v6n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
