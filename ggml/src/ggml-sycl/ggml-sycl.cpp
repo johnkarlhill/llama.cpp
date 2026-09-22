@@ -30,6 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <regex>
+#include <map>
+#include <chrono>
 
 #include <sycl/sycl.hpp>
 #include <sycl/backend.hpp>
@@ -5984,6 +5986,15 @@ static int ggml_sycl_try_gdn_cache_fusion(const ggml_cgraph * cgraph, int node_i
 static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
     ggml_sycl_set_main_device(sycl_ctx->device);
 
+    // GGML_SYCL_NODE_TIMER=1: per-node wall timing (queue-synced) aggregated by op+name.
+    // GGML_SYCL_NODE_TIMER_DUMP=<path>: append per-graph CSV rows on graph completion.
+    // Profiling-only instrumentation; zero cost when env unset.
+    static const bool   node_timer_on   = getenv("GGML_SYCL_NODE_TIMER") != nullptr;
+    static const char * node_timer_dump = getenv("GGML_SYCL_NODE_TIMER_DUMP");
+    static std::map<std::string, std::pair<int64_t, int64_t>> node_accum;  // key -> {count, total_us}
+    std::string timer_key;
+    std::chrono::steady_clock::time_point t_node;
+
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         if (ggml_sycl_is_view_or_noop(node)) {
@@ -5991,6 +6002,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         }
         if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
             continue;
+        }
+
+        if (node_timer_on) {
+            timer_key = std::string(ggml_op_name(node->op)) + "|" +
+                        (node->op == GGML_OP_MUL_MAT && node->src[0] ? node->src[0]->name : node->name);
+            t_node = std::chrono::steady_clock::now();
         }
 
         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);
@@ -6076,6 +6093,26 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+
+        if (node_timer_on) {
+            // sync so wall time reflects kernel completion, not just enqueue
+            sycl_ctx->stream()->wait();
+            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - t_node).count();
+            auto & acc = node_accum[timer_key];
+            acc.first++;
+            acc.second += us;
+        }
+    }
+
+    if (node_timer_on && node_timer_dump) {
+        std::ofstream f(node_timer_dump, std::ios::app);
+        if (f.is_open()) {
+            f << "# graph n_nodes=" << cgraph->n_nodes << "\n";
+            for (const auto & kv : node_accum) {
+                f << kv.first << "," << kv.second.first << "," << kv.second.second << "\n";
+            }
+        }
     }
 }
 
