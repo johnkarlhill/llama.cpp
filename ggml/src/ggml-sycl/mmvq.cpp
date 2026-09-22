@@ -1803,6 +1803,76 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v8(const void * vx, const void * vy,
     });
 }
 
+// v9: memory-level-parallelism body. 1 row/warp, but each lane owns FOUR k-blocks
+// per iteration (136B contiguous weight stream per lane, 16KB per warp) so 8+ loads
+// are in flight per lane - hides cold-DRAM latency like Q6_K's template (478 GB/s
+// cold). SWAR decode (LUT costs registers). Scalar pre-sum of the lane's 4 blocks,
+// then the standard 32-lane butterfly.
+static __dpct_inline__ void mul_mat_vec_pq2_0_v9(
+        const void * __restrict__ vx, const void * __restrict__ vy,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2);
+    const int warp  = item_ct1.get_local_id(1);
+    const int row   = item_ct1.get_group(2) * item_ct1.get_local_range(1) + warp;
+
+    if (row >= nrows) return;
+
+    const block_pq2_0  * x = (const block_pq2_0 *)  vx;
+    const block_q8_1 * y = (const block_q8_1 *) vy;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    float tmp = 0.0f;
+
+    // blocks grouped in fours: lane L handles blocks {4L, 4L+1, 4L+2, 4L+3} per iter
+    const int group_stride = WARP_SIZE * 4;
+    const int padded = (blocks_per_row + group_stride - 1) / group_stride * group_stride;
+    for (int i0 = 0; i0 < padded; i0 += group_stride) {
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int b    = i0 + lane * 4 + k;
+            const bool ok  = b < blocks_per_row;
+            const int ibx  = row * blocks_per_row + (ok ? b : 0);
+            const int iby0 = (ok ? b : 0) * (QK_PQ2_0 / QK8_1);
+            float dv = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+                dv += ok ? vec_dot_pq2_0_q8_1_swar(&x[ibx], &y[iby0], c) : 0.0f;
+            }
+            tmp += dv;
+        }
+    }
+
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        dst[row] = tmp;
+    }
+}
+
+// v9 launcher: 1 row/warp (v5-proven shape), 1 row per group y
+static void mul_mat_vec_pq2_0_q8_1_sycl_v9(const void * vx, const void * vy,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v9(
+                    vx, vy, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 // v4: PQ2_0 MMVQ with Q6_K-like access pattern (tg path, ncols_dst == 1).
 // 8 lanes per 128-elem block, 2 blocks per warp iteration:
 //   lane L in group g (g = L/8), block pair (2i + g):
@@ -2032,7 +2102,7 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
         return;
     }
     switch (ncols_dst) {
-        case 1: mul_mat_vec_pq2_0_q8_1_sycl(vx, vy, dst, ncols, nrows, stream); break;  // baseline v5+lut (v8 ILP-2 failed, kept for reference)
+        case 1: mul_mat_vec_pq2_0_q8_1_sycl_v9(vx, vy, dst, ncols, nrows, stream); break;  // 48t/s push: v9 MLP body
         case 2: mul_mat_vec_pq2_0_q8_1_sycl_v6n<2>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 3: mul_mat_vec_pq2_0_q8_1_sycl_ncols<3>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
         case 4: mul_mat_vec_pq2_0_q8_1_sycl_ncols<4>(vx, vy, dst, ncols, nrows, stride_col_y, stride_col_dst, stream); break;
@@ -3894,6 +3964,8 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_sycl_v7(vx, vy, dst, ncols, nrows, stream);
     } else if (which == 8) {
         mul_mat_vec_pq2_0_q8_1_sycl_v8(vx, vy, dst, ncols, nrows, stream);
+    } else if (which == 9) {
+        mul_mat_vec_pq2_0_q8_1_sycl_v9(vx, vy, dst, ncols, nrows, stream);
     } else {
         const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
         const sycl::range<3> block_nums(1, 1, block_num_y);
