@@ -4973,7 +4973,7 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     if (no_qkv_fuse) {
         return 0;
     }
-    if (ggml_sycl_info().device_count != 1 || g_ggml_sycl_prioritize_dmmv) {
+    if (g_ggml_sycl_prioritize_dmmv) {
         return 0;
     }
 
