@@ -4737,6 +4737,12 @@ static bool can_use_mul_mat_vec_q(const ggml_tensor * src0, const ggml_tensor * 
     if (pq2_mmvq_off && src0->type == GGML_TYPE_PQ2_0) {
         return false;   // force dequant+GEMM path (bisect: is PQ2_0 MMVQ in-model math broken?)
     }
+    // decode-only MMVQ: prefill (ncols>1) falls back to dequant+GEMM; decode stays MMVQ
+    static const bool pq2_decode_only = getenv("GGML_SYCL_PQ2_MMVQ_DECODE_ONLY") != nullptr
+        && strcmp(getenv("GGML_SYCL_PQ2_MMVQ_DECODE_ONLY"), "1") == 0;
+    if (pq2_decode_only && src0->type == GGML_TYPE_PQ2_0 && src1->ne[1] > 1) {
+        return false;
+    }
     return ggml_is_quantized(src0->type) && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
            src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
 }
