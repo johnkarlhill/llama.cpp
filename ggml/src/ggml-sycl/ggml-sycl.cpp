@@ -4956,8 +4956,58 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
 }
 
 // Batch the run of consecutive L2_NORM siblings starting at node_idx into one launch.
-// Returns the number of extra graph nodes consumed, or 0 if the run is shorter than two
+
+// Batch the run of three Q/K/V projection mat-vec siblings sharing one activation into
+// one quantize + one kernel launch. Same constraints as the GLU fusion: no split
+// buffers, DMMV not prioritised, single device.
+static bool ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+    if (!ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT }, {})) {
+        return false;
+    }
+
+    ggml_tensor * nq = cgraph->nodes[node_idx];
+    ggml_tensor * nk = cgraph->nodes[node_idx + 1];
+    ggml_tensor * nv = cgraph->nodes[node_idx + 2];
+    const ggml_tensor * wq = nq->src[0];
+    const ggml_tensor * wk = nk->src[0];
+    const ggml_tensor * wv = nv->src[0];
+    const ggml_tensor * act = nq->src[1];
+
+    if (wq->type != GGML_TYPE_PQ2_0) {
+        return false;
+    }
+    if (ggml_backend_buffer_is_sycl_split(wq->buffer) || ggml_backend_buffer_is_sycl_split(wk->buffer) ||
+        ggml_backend_buffer_is_sycl_split(wv->buffer)) {
+        return false;
+    }
+    if (g_ggml_sycl_prioritize_dmmv) {
+        return false;
+    }
+
+    scope_op_debug_print scope_dbg_print(__func__, nq, /*num_src=*/2, " : fused with k + v projections");
+
+    const int64_t ne00 = wq->ne[0];
+    const int64_t ne11 = act->ne[1];
+    const queue_ptr stream = ctx.stream();
+    const int src1_padded_cols = GGML_PAD((int) ne00, MATRIX_ROW_PADDING);
+
+    // one activation, quantized once and fully consumed before the GEMV on this in-order
+    // queue, so aliasing the dead activation into the outputs needs no memory-range check
+    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
+                                             (size_t) ne11 * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
+    char * src1_ddq = src1_q8_alloc.get();
+    quantize_row_q8_1_sycl<quantize_q8_1>((const float *) act->data, src1_ddq, (int) ne00, (int) ne11,
+                                          src1_padded_cols, stream);
+
+    mul_mat_vec_pq2_0_batched_sycl_v12(wq->data, wk->data, wv->data, src1_ddq,
+                                       (float *) nq->data, (float *) nk->data, (float *) nv->data,
+                                       (int) ne00, (int) wq->ne[1], (int) wk->ne[1], (int) wv->ne[1],
+                                       stream);
+    return true;
+}
 // (the caller then runs the norm through the per-tensor kernel).
+// Returns the number of extra graph nodes consumed, or 0 if the run is shorter than two
+
 static int ggml_sycl_l2_norm_batch_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     const ggml_tensor * node = cgraph->nodes[node_idx];
     if (ggml_sycl_info().device_count != 1 || node->type != GGML_TYPE_F32 ||
@@ -6138,6 +6188,11 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             continue;
         }
 
+        if (node->op == GGML_OP_MUL_MAT && ggml_sycl_mul_mat_qkv_mmvq_fused(*sycl_ctx, cgraph, i)) {
+            i += 2;
+            continue;
+        }
+
         bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
         if (!ok) {
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
@@ -7293,3 +7348,4 @@ ggml_backend_t ggml_backend_sycl_init(int device) {
 }
 
 GGML_BACKEND_DL_IMPL(ggml_backend_sycl_reg)
+

@@ -73,4 +73,13 @@ bool ggml_sycl_mul_mat_vec_q_glu_reorder(
     int                stride_col_dst,       // floats between output columns in dst
     dpct::queue_ptr    stream);
 
+// Batched QKV projection GEMV: three PQ2_0 weight tensors, one shared q8_1 activation,
+// one kernel launch. Row blocks [0,nq)/[nq,nq+nk)/[nq+nk,nq+nk+nv) read wq/wk/wv and
+// write dq/dk/dv respectively. Standard (non-reorder) block layout.
+void mul_mat_vec_pq2_0_batched_sycl_v12(
+    const void * vq, const void * vk, const void * vv,
+    const void * vy, float * dq, float * dk, float * dv,
+    int ncols, int nq, int nk, int nv,
+    dpct::queue_ptr stream);
+
 #endif // GGML_SYCL_MMVQ_HPP

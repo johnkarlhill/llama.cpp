@@ -58,6 +58,52 @@ static bool ggml_sycl_should_fuse_mul_mat_glu(const ggml_tensor * gate, const gg
     return true;
 }
 
+// mul_mat(q) + mul_mat(k) + mul_mat(v) siblings sharing one activation: graph shape and
+// tensor properties only. Backend state is checked by ggml_sycl_mul_mat_qkv_mmvq_fused().
+static bool ggml_sycl_should_fuse_mul_mat_qkv(const ggml_tensor * q, const ggml_tensor * k,
+                                              const ggml_tensor * v) {
+    const ggml_tensor * wq = q->src[0];
+    const ggml_tensor * wk = k->src[0];
+    const ggml_tensor * wv = v->src[0];
+    const ggml_tensor * act = q->src[1];
+
+    // one activation, quantized once, must serve all three weights
+    if (act != k->src[1] || act != v->src[1]) {
+        return false;
+    }
+    // the batched kernel reads all three weights in the same (reorder) layout & type
+    if (wq->type != wk->type || wq->type != wv->type) {
+        return false;
+    }
+
+    if (!ggml_is_contiguous(wq) || !ggml_is_contiguous(wk) || !ggml_is_contiguous(wv) ||
+        !ggml_is_contiguous(act) || !ggml_is_contiguous(q) || !ggml_is_contiguous(k) ||
+        !ggml_is_contiguous(v)) {
+        return false;
+    }
+    if (act->type != GGML_TYPE_F32 || q->type != GGML_TYPE_F32 || k->type != GGML_TYPE_F32 ||
+        v->type != GGML_TYPE_F32) {
+        return false;
+    }
+    if (act->ne[2] != 1 || act->ne[3] != 1 || wq->ne[2] != 1 || wq->ne[3] != 1) {
+        return false;
+    }
+    // each output holds its own matvec rows, one column per decoded token
+    if (q->ne[0] != wq->ne[1] || k->ne[0] != wk->ne[1] || v->ne[0] != wv->ne[1] ||
+        q->ne[1] != act->ne[1] || k->ne[1] != act->ne[1] || v->ne[1] != act->ne[1]) {
+        return false;
+    }
+    // mat-vec only: one column per decoded token, up to the batch the reorder kernels cover
+    if (act->ne[1] > MMVQ_MAX_BATCH_SIZE) {
+        return false;
+    }
+    // all weights must agree on K (activation dim) and block size for shared offsets
+    if (wq->ne[0] != wk->ne[0] || wq->ne[0] != wv->ne[0] || wq->ne[0] % 128 != 0) {
+        return false;
+    }
+    return true;
+}
+
 bool ggml_sycl_can_fuse(const ggml_cgraph * cgraph, int node_idx, std::initializer_list<enum ggml_op> ops,
                         std::initializer_list<enum ggml_unary_op> unary_ops) {
 #ifndef NDEBUG
@@ -89,6 +135,17 @@ bool ggml_sycl_can_fuse(const ggml_cgraph * cgraph, int node_idx, std::initializ
         }
 
         return ggml_sycl_should_fuse_mul_mat_glu(gate, up, glu);
+    }
+
+    // q/k/v projection mat-muls are three siblings sharing one activation: all three
+    // outputs are materialised (consumed downstream), the fusion only merges execution
+    if (ops.size() == 3 && ops.begin()[0] == GGML_OP_MUL_MAT && ops.begin()[1] == GGML_OP_MUL_MAT &&
+        ops.begin()[2] == GGML_OP_MUL_MAT) {
+        if (!ggml_can_fuse_subgraph(cgraph, node_idx, ops, { node_idx, node_idx + 1, node_idx + 2 })) {
+            return false;
+        }
+        return ggml_sycl_should_fuse_mul_mat_qkv(cgraph->nodes[node_idx], cgraph->nodes[node_idx + 1],
+                                                 cgraph->nodes[node_idx + 2]);
     }
 
     if (!ggml_can_fuse(cgraph, node_idx, ops)) {
