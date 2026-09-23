@@ -5003,7 +5003,10 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     ggml_tensor * sib[2];
     int           n_sib = 0;
     int           last  = node_idx;
-    for (int j = node_idx + 1; j < cgraph->n_nodes && n_sib < 2; ++j) {
+    // temp diagnostics: dump the forward walk once
+    static int scan_diag_n = 0;
+    const bool scan_diag = getenv("GGML_SYCL_DEBUG") != nullptr && scan_diag_n < 2;
+    for (int j = node_idx + 1; j < cgraph->n_nodes && n_sib < 2 && (j - node_idx) < 24; ++j) {
         ggml_tensor * nj = cgraph->nodes[j];
         if (is_view_class(nj)) {
             continue;
@@ -5016,6 +5019,15 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             continue;
         }
         break;  // any other launch ends the sibling run
+    }
+    if (scan_diag) {
+        scan_diag_n++;
+        GGML_LOG_DEBUG("[PQ2SCAN] node %d walk: n_sib=%d\n", node_idx, n_sib);
+        for (int d = 1; d < 24 && node_idx + d < cgraph->n_nodes; ++d) {
+            const ggml_tensor * dn = cgraph->nodes[node_idx + d];
+            GGML_LOG_DEBUG("[PQ2SCAN]   +%02d op=%s ne=[%lld,%lld] type=%d\n", d, ggml_op_name(dn->op),
+                           (long long) dn->ne[0], (long long) dn->ne[1], (int) dn->type);
+        }
     }
     if (n_sib != 2) {
         return 0;
