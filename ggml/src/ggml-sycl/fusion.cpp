@@ -30,8 +30,10 @@ static bool ggml_sycl_should_fuse_mul_mat_glu(const ggml_tensor * gate, const gg
         return false;
     }
 
-    // only q4_K has a fused reorder GEMV so far, and it walks whole super-blocks
-    if (wu->type != GGML_TYPE_Q4_K || wu->ne[0] % QK_K != 0) {
+    // fused reorder GEMV: Q4_K (whole super-block walk) and PQ2_0 (128-elem blocks;
+    // Bonsai-2 FFN weights, n_embd % 128 == 0)
+    if ((wu->type != GGML_TYPE_Q4_K && wu->type != GGML_TYPE_PQ2_0) ||
+        wu->ne[0] % QK_K != 0) {
         return false;
     }
 
