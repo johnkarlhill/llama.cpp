@@ -4961,6 +4961,14 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
 // one quantize + one kernel launch. Same constraints as the GLU fusion: no split
 // buffers, DMMV not prioritised, single device.
 static bool ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+    // A/B gate: set GGML_SYCL_NO_QKV_FUSE=1 to fall back to per-projection dispatch
+    static const bool no_qkv_fuse = []() {
+        const char * env = getenv("GGML_SYCL_NO_QKV_FUSE");
+        return env && env[0] == '1';
+    }();
+    if (no_qkv_fuse) {
+        return false;
+    }
     if (!ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT }, {})) {
         return false;
     }
