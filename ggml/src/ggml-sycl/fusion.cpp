@@ -121,6 +121,15 @@ bool ggml_sycl_can_fuse(const ggml_cgraph * cgraph, int node_idx, std::initializ
     // subgraph form with the GLU as the only materialised output.
     if (ops.size() == 3 && ops.begin()[0] == GGML_OP_MUL_MAT && ops.begin()[1] == GGML_OP_MUL_MAT &&
         ops.begin()[2] == GGML_OP_GLU) {
+        if (getenv("GGML_SYCL_GLU_DIAG")) {
+            const char * n0 = ggml_get_name(cgraph->nodes[node_idx]);
+            const char * n1 = node_idx + 1 < cgraph->n_nodes ? ggml_get_name(cgraph->nodes[node_idx + 1]) : "?";
+            const char * n2 = node_idx + 2 < cgraph->n_nodes ? ggml_get_name(cgraph->nodes[node_idx + 2]) : "?";
+            fprintf(stderr, "glu-diag: anchor=%s (%s) next=%s (%s) next2=%s (%s)\n",
+                    n0 ? n0 : "?", ggml_op_desc(cgraph->nodes[node_idx]),
+                    n1 ? n1 : "?", node_idx + 1 < cgraph->n_nodes ? ggml_op_desc(cgraph->nodes[node_idx + 1]) : "?",
+                    n2 ? n2 : "?", node_idx + 2 < cgraph->n_nodes ? ggml_op_desc(cgraph->nodes[node_idx + 2]) : "?");
+        }
         if (!ggml_can_fuse_subgraph(cgraph, node_idx, ops, { node_idx + 2 })) {
             return false;
         }
