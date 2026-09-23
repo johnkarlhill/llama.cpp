@@ -3350,6 +3350,9 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                             meta[10] = (int) src1->ne[0];
                             meta[11] = (int) src0->ne[0];
                             const size_t blk_sz = sizeof(block_pq2_0);
+                            std::vector<float> xf(ne10);
+                            stream->memcpy(xf.data(), src1_ddf_i, ne10*4).wait();
+                            fwrite(xf.data(), 4, ne10, fdbg);
                             const size_t y8_sz  = sizeof(block_q8_1);
                             std::vector<char> xb(320 * blk_sz);
                             stream->memcpy(xb.data(), src0_dd_i, xb.size()).wait();
