@@ -3330,7 +3330,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                 {
                     static const bool pq2_dump = getenv("GGML_SYCL_PQ2_DUMP") != nullptr
                         && getenv("GGML_SYCL_PQ2_DUMP")[0] == '1';
-                    if (pq2_dump && i == 0 && src1_ncols == 1 && src0->ne[1] != 248320 && pq2_dump_count < 6) {
+                    if (pq2_dump && i == 0 && src1_ncols == 2 && src0->ne[1] != 248320 && pq2_dump_count < 6) {
                         pq2_dump_count++;
                         char fn[128];
                         snprintf(fn, sizeof(fn), "C:\\llama.cpp-build-sycl\\pq2_dump_%d.bin", pq2_dump_count);
@@ -3356,9 +3356,9 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                             const size_t y8_sz  = sizeof(block_q8_1);
                             std::vector<char> xb(320 * blk_sz);
                             stream->memcpy(xb.data(), src0_dd_i, xb.size()).wait();
-                            std::vector<char> yb((size_t)std::max(160, (int)(src1_padded_col_size / QK8_1)) * y8_sz);
-                            stream->memcpy(yb.data(), src1_ddq_i_bs, yb.size()).wait();
-                            std::vector<float> db(std::max(64, (int)row_diff < 64 ? (int)row_diff : 64));
+                            std::vector<char> yb((size_t)std::max(160, (int)(src1_padded_col_size / QK8_1)) * y8_sz * (src1_ncols > 1 ? src1_ncols : 1));
+                            stream->memcpy(yb.data(), src1_ddq_i, yb.size()).wait();
+                            std::vector<float> db(std::max(64, (int)row_diff < 64 ? (int)row_diff : 64) * (src1_ncols > 1 ? src1_ncols : 1));
                             stream->memcpy(db.data(), dst_dd_i, db.size()*4).wait();
                             fwrite(meta, 4, 12, fdbg);
                             fwrite(xb.data(), 1, xb.size(), fdbg);
