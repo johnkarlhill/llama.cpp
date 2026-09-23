@@ -57,6 +57,12 @@ bool ggml_sycl_mul_mat_vec_q_id_reorder(
     size_t             src1_row_stride,
     dpct::queue_ptr    stream);
 
+// Inverse of reorder_qw_pq2_0: restore a PQ2_0 weight tensor from SoA back to the
+// standard AoS block layout, in place. Used when a multi-column (prefill) mul_mat
+// runs after decode reordered the weights.
+bool ggml_sycl_reorder_qw_pq2_0_restore(void * data_device, int ncols, int nrows, size_t size, size_t offset,
+                                        dpct::queue_ptr stream);
+
 // Fused dense-FFN GEMV: writes glu(gate . y, up . y) instead of the two mat-vec results.
 // vx / vgate must share shape, stride and reorder layout. Returns false if unhandled.
 bool ggml_sycl_mul_mat_vec_q_glu_reorder(

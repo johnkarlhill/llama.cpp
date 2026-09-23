@@ -4244,6 +4244,60 @@ static bool reorder_qw_pq2_0(uint8_t * data_device, const int ncols, const int n
     return true;
 }
 
+static bool reorder_qw_pq2_0_restore(uint8_t * data_device, const int ncols, const int nrows, size_t size, size_t offset,
+                                     dpct::queue_ptr stream) {
+    // Inverse of reorder_qw_pq2_0: SoA ([all qs][all d]) -> AoS block_pq2_0.
+    // Needed when a multi-column (prefill) mul_mat follows a decode that reordered
+    // the weights in place: the AOS body cannot read SoA.
+    sycl_reorder_temp_buffer tmp(stream, size);
+    if (!tmp) {
+        GGML_LOG_WARN("%s: failed to allocate %zu bytes for reorder temp buffer, skipping restore\n", __func__, size);
+        return false;
+    }
+    uint8_t * tmp_buf = static_cast<uint8_t *>(tmp.ptr);
+
+    sycl::event copy_event;
+    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device, size)));
+    if (!g_ggml_sycl_use_async_mem_op) {
+        copy_event.wait();
+    }
+
+    GGML_ASSERT((size % sizeof(block_pq2_0) == 0));
+    GGML_ASSERT((offset % sizeof(block_pq2_0) == 0));
+    int offset_blks = offset / sizeof(block_pq2_0);
+    const uint8_t * qs_ptr = data_device + offset_blks * QK_PQ2_0 / 4;
+    const sycl::half * d_ptr = (const sycl::half *) (qs_ptr + (size_t) ncols * nrows / 4) + offset_blks;
+
+    auto restore_event = stream->parallel_for(
+        size / sizeof(block_pq2_0),
+            [=](auto i) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+            block_pq2_0* x = (block_pq2_0*)tmp_buf;
+            const int ib = i;
+
+            #pragma unroll
+            for (int j = 0; j < QK_PQ2_0 / 4; j++)
+            {
+                x[ib].qs[j] = *(qs_ptr + ib * QK_PQ2_0 / 4 + j);
+            }
+            x[ib].d = *(d_ptr + ib);
+        });
+    if (!g_ggml_sycl_use_async_mem_op) {
+        restore_event.wait_and_throw();
+    }
+    sycl::event back_event;
+    SYCL_CHECK(CHECK_TRY_ERROR(back_event = stream->memcpy(data_device, tmp_buf, size)));
+    if (!g_ggml_sycl_use_async_mem_op) {
+        back_event.wait();
+    }
+    return true;
+}
+
+bool ggml_sycl_reorder_qw_pq2_0_restore(void * data_device, int ncols, int nrows, size_t size, size_t offset,
+                                        dpct::queue_ptr stream) {
+    return reorder_qw_pq2_0_restore((uint8_t *) data_device, ncols, nrows, size, offset, stream);
+}
+
+
 static bool reorder_qw_q8_0(uint8_t * data_device, const int ncols, const int nrows, size_t size, size_t offset,
                             dpct::queue_ptr stream) {
     sycl_reorder_temp_buffer tmp(stream, size);

@@ -3505,14 +3505,25 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     }
                     return;
                 } else if (i == 0 || src1_ncols == 1) {
-                    // AOS body: unreachable for reordered weights (cols 1..8 route to
-                    // switch_ncols above); a reordered tensor here means prefill-after-
-                    // decode — fail loud instead of computing garbage.
-                    GGML_ASSERT(!(((ggml_tensor_extra_gpu *) dst->src[0]->extra) &&
-                                  ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder));
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
+                    // AOS body: if a previous decode reordered this weight in place
+                    // (SoA), restore the AoS block layout first — the AOS reader
+                    // cannot parse SoA (would compute garbage silently).
+                    {
+                        ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *) dst->src[0]->extra;
+                        if (extra && extra->optimized_feature.reorder) {
+                            bool restored = ggml_sycl_reorder_qw_pq2_0_restore(
+                                src0_dd_i, (int) ne00, (int) src0->ne[1],
+                                (size_t) row_diff * src0->nb[1], 0, stream);
+                            if (restored) {
+                                extra->optimized_feature.reorder = false;
+                            } else {
+                                GGML_ABORT("pq2_0: reordered weight reached AOS body and restore failed");
+                            }
+                        }
+                    }
                     // A/B: v9 (pure SWAR MLP, reads pre-quantized q8_1) — v10 fused
                     // parked until its quantize math is validated (MINI: returns 0)
                     static const bool pq2_f32act = getenv("GGML_SYCL_PQ2_F32ACT") != nullptr
