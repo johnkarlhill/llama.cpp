@@ -4897,7 +4897,14 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
 // Fused dense-FFN mat-vec for the {mul_mat(gate), mul_mat(up), GLU} subgraph at node_idx.
 // Returns false if it declined, in which case the caller runs the three nodes normally.
 static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+    static const bool glu_diag = getenv("GGML_SYCL_GLU_DIAG") != nullptr;
+    auto glu_log = [&](const char * stage) {
+        if (glu_diag) {
+            fprintf(stderr, "%s: %s: declined at %s\n", __func__, "diag", stage);
+        }
+    };
     if (!ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU }, {})) {
+        glu_log("can_fuse");
         return false;
     }
 
@@ -4911,11 +4918,13 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
     // this writes glu->data directly rather than the per-device row slices that
     // ggml_sycl_op_mul_mat() stitches back together, so it cannot serve split weights
     if (ggml_backend_buffer_is_sycl_split(wu->buffer) || ggml_backend_buffer_is_sycl_split(wg->buffer)) {
+        glu_log("split");
         return false;
     }
 
     // with DMMV prioritised the unfused path would not have gone through mmvq at all
     if (g_ggml_sycl_prioritize_dmmv) {
+        glu_log("dmmv");
         return false;
     }
 
@@ -4927,6 +4936,7 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
     const auto * extra_u = static_cast<const ggml_tensor_extra_gpu *>(wu->extra);
     const auto * extra_g = static_cast<const ggml_tensor_extra_gpu *>(wg->extra);
     if (!extra_u || !extra_g || !extra_u->optimized_feature.reorder || !extra_g->optimized_feature.reorder) {
+        glu_log("reorder-null");
         return false;
     }
 
