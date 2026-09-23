@@ -5005,7 +5005,8 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     int           last  = node_idx;
     // temp diagnostics: dump the forward walk once
     static int scan_diag_n = 0;
-    const bool scan_diag = getenv("GGML_SYCL_DEBUG") != nullptr && scan_diag_n < 2;
+    const bool scan_diag = getenv("GGML_SYCL_DEBUG") != nullptr && scan_diag_n < 6 &&
+                           nq->src[0]->name && strstr(nq->src[0]->name, "attn_q") != nullptr;
     for (int j = node_idx + 1; j < cgraph->n_nodes && n_sib < 2 && (j - node_idx) < 24; ++j) {
         ggml_tensor * nj = cgraph->nodes[j];
         if (is_view_class(nj)) {
