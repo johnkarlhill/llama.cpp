@@ -4068,6 +4068,10 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_sycl_v9(vx, vy, dst, ncols, nrows, stream);
     } else if (which == 10) {
         mul_mat_vec_pq2_0_q8_1_sycl_v10(vx, (const float *) vy, dst, ncols, nrows, stream);
+    } else if (which == 11) {
+        // 2-col test: y holds two back-to-back cols, dst two back-to-back col buffers
+        mul_mat_vec_pq2_0_q8_1_sycl_ncols<2>(vx, vy, dst, ncols, nrows,
+                                             ncols / QK8_1, nrows, stream);
     } else {
         const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
         const sycl::range<3> block_nums(1, 1, block_num_y);

@@ -181,6 +181,60 @@ int main() {
     sycl::free(mdx, q); sycl::free(mdy, q); sycl::free(mout, q);
   }
 
+  // 2-COL TEST: which=11 (_ncols<2> template, the prefill path) vs v9 run twice.
+  // Full-size row (K=TC) to exercise the real block walk. y = 2 back-to-back cols.
+  {
+    const int NB2 = TC/128, NYB2 = NB2*4;
+    block_pq2_0_dbg* cdx = (block_pq2_0_dbg*)sycl::malloc_device(TN*NB2*sizeof(block_pq2_0_dbg), q);
+    block_q8_1_dbg*  cdy = (block_q8_1_dbg*)sycl::malloc_device(2*NYB2*sizeof(block_q8_1_dbg), q);
+    std::vector<block_pq2_0_dbg> cwx(TN*NB2);
+    std::vector<block_q8_1_dbg> cwy(2*NYB2);
+    for (auto &b : cwx) { b.d = f32h(0.5f + (rand()%1500)/1000.0f); for (int i=0;i<32;i++) b.qs[i]=rand()&0xFF; }
+    for (int col = 0; col < 2; col++)
+      for (int cB = 0; cB < NYB2; cB++) {
+        int t=0;
+        for (int i=0;i<32;i++){ cwy[col*NYB2+cB].qs[i]=(int8_t)(rand()%256-128); t+=cwy[col*NYB2+cB].qs[i]; }
+        cwy[col*NYB2+cB].ds[0]=f32h(1.0f); cwy[col*NYB2+cB].ds[1]=f32h((float)t);
+      }
+    q.memcpy(cdx, cwx.data(), cwx.size()*sizeof(block_pq2_0_dbg)).wait();
+    q.memcpy(cdy, cwy.data(), cwy.size()*sizeof(block_q8_1_dbg)).wait();
+    float* cout = (float*)sycl::malloc_device(2*TN*sizeof(float), q);
+    // v9 on col0 alone: reference = run(which=9) on col0's y, into first TN floats
+    run(cdx, cdy, cout, TC, TN, 9, (uintptr_t)&q); q.wait();
+    // _ncols<2> on both cols
+    run(cdx, cdy, cout, TC, TN, 11, (uintptr_t)&q); q.wait();
+    std::vector<float> o11(2*TN);
+    q.memcpy(o11.data(), cout, 2*TN*sizeof(float)).wait();
+    // python reference for col0 row0..2 (same math as CPU ref above)
+    for (int r = 0; r < 2; r++) {
+      double acc = 0.0;
+      for (int b = 0; b < NB2; b++) {
+        const block_pq2_0_dbg & wb = cwx[r*NB2 + b];
+        float d2 = fp16_to_f32(wb.d);
+        for (int c = 0; c < 4; c++) {
+          float d8 = fp16_to_f32(cwy[c].ds[0]);
+          int sumi = 0;
+          for (int j = 0; j < 4; j++) {
+            uint8_t b0 = wb.qs[c*8 + j*2 + 0], b1 = wb.qs[c*8 + j*2 + 1];
+            uint32_t q16 = (uint32_t)b0 | ((uint32_t)b1 << 16);
+            for (int i = 0; i < 4; i++) {
+              int cl = (((q16 >> (2*i)) & 3) - 1) & 0xFF;
+              int ch = (((q16 >> (2*(i+4))) & 3) - 1) & 0xFF;
+              int al = cwy[c].qs[j*8 + i];
+              int ah = cwy[c].qs[j*8 + i + 4];
+              sumi += (int8_t)cl * al + (int8_t)ch * ah;
+            }
+          }
+          acc += (double)d2 * d8 * sumi;
+        }
+      }
+      printf("2col row%d: ncols_kern=%.2f cpu_ref=%.2f %s\n", r, o11[r], acc,
+             fabs(o11[r]-acc) < 0.01*fabs(acc)+1e-3 ? "OK" : "FAIL");
+    }
+    // col1 result vs col0 reference run
+    printf("2col col1 row0=%.2f col0 row0=%.2f (should match: same... no, different y)\n", o11[TN], o11[0]);
+    sycl::free(cdx, q); sycl::free(cdy, q); sycl::free(cout, q);
+  }
 
   return 0;
 }
