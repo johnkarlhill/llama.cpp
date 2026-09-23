@@ -4039,9 +4039,10 @@ static bool ggml_sycl_mul_mat_vec_q_glu_reorder_pq2(enum ggml_glu_op glu_op, con
                                                          stride_col_dst, glu_op, stream);
             return true;
         case 2:
-            // FFN gate/up = 17408 rows: 2 rows per subgroup
-            launch_mul_mat_vec_q_reorder_glu_impl<vec_dot, 2, 2>(vx, vgate, vy, dst, ncols, nrows, stride_col_y_bytes,
-                                                                  stride_col_dst, glu_op, stream);
+            // rows_per_sg=2 requires reorder_vec_dot_shared_activations<PQ2_0> (not
+            // specialized); stay at 1 row/subgroup for v1.
+            launch_mul_mat_vec_q_reorder_glu<vec_dot, 2>(vx, vgate, vy, dst, ncols, nrows, stride_col_y_bytes,
+                                                         stride_col_dst, glu_op, stream);
             return true;
         default:
             return false;
