@@ -3515,7 +3515,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                         ggml_tensor_extra_gpu * extra = (ggml_tensor_extra_gpu *) dst->src[0]->extra;
                         if (extra && extra->optimized_feature.reorder) {
                             bool restored = ggml_sycl_reorder_qw_pq2_0_restore(
-                                src0_dd_i, (int) ne00, (int) src0->ne[1],
+                                const_cast<void *>((const void *) src0_dd_i), (int) ne00, (int) src0->ne[1],
                                 (size_t) row_diff * src0->nb[1], 0, stream);
                             if (restored) {
                                 extra->optimized_feature.reorder = false;
