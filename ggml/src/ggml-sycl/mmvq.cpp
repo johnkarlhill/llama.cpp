@@ -3463,10 +3463,10 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                 break;
             case GGML_TYPE_PQ2_0:
                 // A reordered (SoA) tensor must never reach the AOS v9 body: silent wrong
-                // math. Reordered PQ2_0 weights only serve the fused-GLU kernel; if a
-                // reordered tensor escapes here, fail loud, do not compute garbage.
-                GGML_ASSERT(!(((ggml_tensor_extra_gpu *) dst->src[0]->extra) &&
-                              ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder));
+                // math. Reordered PQ2_0 weights serve the SoA switch_ncols kernel below
+                // (cols 1..8) and the fused-GLU kernel; if a reordered tensor escapes to
+                // the AOS body (e.g. prefill cols>8 after a decode reordered in place),
+                // fail loud, do not compute garbage.
                 if (i == 0 && src1_ncols > 1 && src1_ncols <= 8 && getenv("GGML_SYCL_PQ2_NO_MMQ") == nullptr) {
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
@@ -3505,6 +3505,11 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     }
                     return;
                 } else if (i == 0 || src1_ncols == 1) {
+                    // AOS body: unreachable for reordered weights (cols 1..8 route to
+                    // switch_ncols above); a reordered tensor here means prefill-after-
+                    // decode — fail loud instead of computing garbage.
+                    GGML_ASSERT(!(((ggml_tensor_extra_gpu *) dst->src[0]->extra) &&
+                                  ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder));
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
