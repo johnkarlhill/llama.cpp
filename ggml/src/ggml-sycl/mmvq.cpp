@@ -3310,6 +3310,11 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                 }
                 break;
             case GGML_TYPE_PQ2_0:
+                // A reordered (SoA) tensor must never reach the AOS v9 body: silent wrong
+                // math. Reordered PQ2_0 weights only serve the fused-GLU kernel; if a
+                // reordered tensor escapes here, fail loud, do not compute garbage.
+                GGML_ASSERT(!(((ggml_tensor_extra_gpu *) dst->src[0]->extra) &&
+                              ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder));
                 if (i == 0 && src1_ncols > 1 && src1_ncols <= 8 && getenv("GGML_SYCL_PQ2_NO_MMQ") == nullptr) {
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
                     const int stride_col_dst = dst->ne[0];
@@ -4021,15 +4026,45 @@ static void launch_mul_mat_vec_q_reorder_glu(const void * vx, const void * vgate
     launch_mul_mat_vec_q_reorder_glu_impl<reorder_vec_dot_q_sycl, ncols_dst, rows_per_sg>(vx, vgate, vy, dst, ncols, nrows, stride_col_y_bytes, stride_col_dst, glu_op, stream);
 }
 
+static bool ggml_sycl_mul_mat_vec_q_glu_reorder_pq2(enum ggml_glu_op glu_op, const void * vx,
+                                                     const void * vgate, const void * vy, float * dst,
+                                                     int ncols, int nrows, int ncols_dst,
+                                                     int stride_col_y_bytes, int stride_col_dst,
+                                                     dpct::queue_ptr stream) {
+    using vec_dot = reorder_vec_dot_q_sycl<GGML_TYPE_PQ2_0>;
+
+    switch (ncols_dst) {
+        case 1:
+            launch_mul_mat_vec_q_reorder_glu<vec_dot, 1>(vx, vgate, vy, dst, ncols, nrows, stride_col_y_bytes,
+                                                         stride_col_dst, glu_op, stream);
+            return true;
+        case 2:
+            // FFN gate/up = 17408 rows: 2 rows per subgroup
+            launch_mul_mat_vec_q_reorder_glu_impl<vec_dot, 2, 2>(vx, vgate, vy, dst, ncols, nrows, stride_col_y_bytes,
+                                                                  stride_col_dst, glu_op, stream);
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool ggml_sycl_mul_mat_vec_q_glu_reorder(enum ggml_type src0_type, enum ggml_glu_op glu_op, const void * vx,
                                          const void * vgate, const void * vy, float * dst, int ncols, int nrows,
                                          int ncols_dst, int stride_col_y_bytes, int stride_col_dst,
                                          dpct::queue_ptr stream) {
-    if (src0_type != GGML_TYPE_Q4_K) {
+    if (src0_type != GGML_TYPE_Q4_K && src0_type != GGML_TYPE_PQ2_0) {
         return false;
     }
     if (glu_op != GGML_GLU_OP_SWIGLU && glu_op != GGML_GLU_OP_GEGLU) {
         return false;
+    }
+
+    switch (src0_type) {
+        case GGML_TYPE_PQ2_0:
+            return ggml_sycl_mul_mat_vec_q_glu_reorder_pq2(glu_op, vx, vgate, vy, dst, ncols, nrows,
+                                                           ncols_dst, stride_col_y_bytes, stride_col_dst, stream);
+        default:
+            break;
     }
 
     using vec_dot = reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>;

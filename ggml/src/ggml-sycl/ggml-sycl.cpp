@@ -4038,6 +4038,7 @@ inline bool ggml_sycl_supports_reorder_dmmv(enum ggml_type type) {
 inline bool ggml_sycl_supports_reorder_mmvq(enum ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:
+        case GGML_TYPE_PQ2_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_Q2_K:
@@ -4192,6 +4193,47 @@ static bool reorder_qw_q4_0(uint8_t * data_device, const int ncols, const int nr
             for (int j = 0; j < QK4_0/2; j ++)
             {
                 *(qs_ptr + ib * QK4_0 / 2 + j) = x[ib].qs[j];
+            }
+            *(d_ptr + ib) = x[ib].d;
+        });
+    if (!g_ggml_sycl_use_async_mem_op) {
+        reorder_event.wait_and_throw();
+    }
+    return true;
+}
+
+static bool reorder_qw_pq2_0(uint8_t * data_device, const int ncols, const int nrows, size_t size, size_t offset,
+                            dpct::queue_ptr stream) {
+    sycl_reorder_temp_buffer tmp(stream, size);
+    if (!tmp) {
+        GGML_LOG_WARN("%s: failed to allocate %zu bytes for reorder temp buffer, skipping reorder\n", __func__, size);
+        return false;
+    }
+    uint8_t * tmp_buf = static_cast<uint8_t *>(tmp.ptr);
+
+    sycl::event copy_event;
+    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device, size)));
+    if (!g_ggml_sycl_use_async_mem_op) {
+        copy_event.wait();
+    }
+
+    GGML_ASSERT((size % sizeof(block_pq2_0) == 0));
+    GGML_ASSERT((offset % sizeof(block_pq2_0) == 0));
+    int offset_blks = offset / sizeof(block_pq2_0);
+    // Reordered SoA: all qs bytes first (32 B per 128-el block), then all fp16 scales.
+    auto qs_ptr = data_device + offset_blks * QK_PQ2_0 / 4;
+    auto d_ptr  = (sycl::half *) (qs_ptr + (size_t) ncols * nrows / 4) + offset_blks;
+
+    auto reorder_event = stream->parallel_for(
+        size / sizeof(block_pq2_0),
+            [=](auto i) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+            const block_pq2_0* x = (const block_pq2_0*)tmp_buf;
+            const int ib = i;
+
+            #pragma unroll
+            for (int j = 0; j < QK_PQ2_0 / 4; j++)
+            {
+                *(qs_ptr + ib * QK_PQ2_0 / 4 + j) = x[ib].qs[j];
             }
             *(d_ptr + ib) = x[ib].d;
         });
@@ -4643,6 +4685,8 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
     switch (src0->type) {
         case GGML_TYPE_Q4_0:
             return reorder_qw_q4_0(data_device, ncols, nrows, size, 0, stream);
+        case GGML_TYPE_PQ2_0:
+            return reorder_qw_pq2_0(data_device, ncols, nrows, size, 0, stream);
         case GGML_TYPE_Q8_0:
             return reorder_qw_q8_0(data_device, ncols, nrows, size, 0, stream);
         case GGML_TYPE_Q2_K:

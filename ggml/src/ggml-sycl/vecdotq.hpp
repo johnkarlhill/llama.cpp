@@ -448,6 +448,56 @@ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q8_0> {
     }
 };
 
+template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_PQ2_0> {
+    static constexpr ggml_type gtype = GGML_TYPE_PQ2_0;
+
+    using pq2_block  = ggml_sycl_reordered::block_q_t<GGML_TYPE_PQ2_0>;
+    using pq2_traits = typename pq2_block::traits;
+
+    // One 32-element chunk per call: iqs in 0..3, 8 bytes of 2-bit codes = one uint64.
+    // SWAR expansion is bit-identical to vec_dot_pq2_0_q8_1_swar; only the weight
+    // addressing differs (SoA: qs bytes of all blocks first, then fp16 scales).
+    __dpct_inline__ float operator()(const void * __restrict__ vbq, const std::pair<int, int> ibx_offset,
+                                     const std::pair<int, int> d_offset, const int8_t * q8_1_quant_ptr,
+                                     const sycl::half2 * q8_1_ds, const int & iqs) {
+        const uint8_t * qs_base = static_cast<const uint8_t *>(vbq) + ibx_offset.first;
+        const ggml_half  d2     = *reinterpret_cast<const ggml_half *>(static_cast<const uint8_t *>(vbq) + d_offset.first);
+
+        const uint64_t packed = *reinterpret_cast<const uint64_t *>(qs_base + iqs * 8);
+        const block_q8_1 * bq8_1_chunk = reinterpret_cast<const block_q8_1 *>(q8_1_quant_ptr + iqs * QK8_1);
+
+        const uint16_t * qs16 = reinterpret_cast<const uint16_t *>(&packed);
+        int sumi = 0;
+
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            uint32_t q = qs16[j];
+
+            uint64_t expanded = 0;
+            expanded |= (uint64_t)((((q >>  0) & 3) - 1) & 0xFF) <<  0;
+            expanded |= (uint64_t)((((q >>  2) & 3) - 1) & 0xFF) <<  8;
+            expanded |= (uint64_t)((((q >>  4) & 3) - 1) & 0xFF) << 16;
+            expanded |= (uint64_t)((((q >>  6) & 3) - 1) & 0xFF) << 24;
+            expanded |= (uint64_t)((((q >>  8) & 3) - 1) & 0xFF) << 32;
+            expanded |= (uint64_t)((((q >> 10) & 3) - 1) & 0xFF) << 40;
+            expanded |= (uint64_t)((((q >> 12) & 3) - 1) & 0xFF) << 48;
+            expanded |= (uint64_t)((((q >> 14) & 3) - 1) & 0xFF) << 56;
+
+            int qx = (int)(expanded & 0xFFFFFFFF);
+            int qy = (int)((expanded >> 32) & 0xFFFFFFFF);
+
+            const int u = get_int_b4(bq8_1_chunk->qs, j*2+0);
+            const int v = get_int_b4(bq8_1_chunk->qs, j*2+1);
+
+            sumi = dpct::dp4a(u, qx, sumi);
+            sumi = dpct::dp4a(v, qy, sumi);
+        }
+
+        const float d8 = bq8_1_chunk->ds[0];
+        return d2 * d8 * sumi;
+    }
+};
+
 template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q2_K> {
     static constexpr ggml_type gtype = GGML_TYPE_Q2_K;
 

@@ -178,6 +178,28 @@ template <> struct block_q_t<GGML_TYPE_Q6_K> {
     static constexpr int block_to_q8_1_ratio() { return traits::qk / QK8_1; }
 };
 
+template <> struct block_q_t<GGML_TYPE_PQ2_0> {
+    struct traits {
+        static constexpr uint32_t qk       = QK_PQ2_0;   // 128
+        static constexpr uint32_t qi       = QI_PQ2_0;   // 4 int32 words per 32-el chunk
+        static constexpr uint32_t qr       = QR_PQ2_0;   // 1
+        static constexpr uint32_t vdr_mmvq = 1;          // one 32-el chunk (8 B) per vec_dot
+    };
+
+    // Reordered layout: [qs (QK_PQ2_0/4 = 32 B per block)] [d (fp16 per block)]
+    static constexpr std::pair<int, int> get_block_offset(const int block_index, const int /* n_blocks */) {
+        return { block_index * (QK_PQ2_0 / 4), 0 };
+    }
+
+    static constexpr std::pair<int, int> get_d_offset(int nrows, int ncols, const int block_index) {
+        auto nblocks        = (nrows * (ncols / QK_PQ2_0));
+        auto total_qs_bytes = nblocks * (QK_PQ2_0 / 4);
+        return { total_qs_bytes + block_index * sizeof(ggml_half), 0 };
+    }
+
+    static constexpr int block_to_q8_1_ratio() { return traits::qk / QK8_1; }
+};
+
 template <> struct block_q_t<GGML_TYPE_Q8_0> {
     struct traits {
         static constexpr uint32_t qk       = QK8_0;      // 32
