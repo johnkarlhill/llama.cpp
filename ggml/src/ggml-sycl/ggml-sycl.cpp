@@ -4898,6 +4898,16 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
 // Fused dense-FFN mat-vec for the {mul_mat(gate), mul_mat(up), GLU} subgraph at node_idx.
 // Returns false if it declined, in which case the caller runs the three nodes normally.
 static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+    // opt-in: the fused kernel reorders gate/up weights IN PLACE (AoS -> SoA).
+    // Any later multi-token (prefill, ne[1] > 8) mul_mat on those weights can only
+    // read AoS, so a prefill after the first fused decode would compute garbage or
+    // assert. Until an un-reorder (SoA -> AoS) exists for PQ2_0, keep this behind
+    // GGML_SYCL_PQ2_GLUFUSE=1 (single-flow decode/bench use only).
+    static const bool glufuse = getenv("GGML_SYCL_PQ2_GLUFUSE") != nullptr
+        && getenv("GGML_SYCL_PQ2_GLUFUSE")[0] == '1';
+    if (!glufuse) {
+        return false;
+    }
     static const bool glu_diag = getenv("GGML_SYCL_GLU_DIAG") != nullptr;
     auto glu_log = [&](const char * stage) {
         if (glu_diag) {
