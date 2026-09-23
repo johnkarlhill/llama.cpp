@@ -4969,7 +4969,24 @@ static bool ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, gg
     if (no_qkv_fuse) {
         return false;
     }
-    if (!ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT }, {})) {
+    // temp diagnostics: why does the fusion never fire? (log once per layer count)
+    static int qkv_diag_n = 0;
+    const bool qkv_diag = getenv("GGML_SYCL_DEBUG") != nullptr && qkv_diag_n < 12;
+
+    const bool ops_ok = ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT }, {});
+    if (qkv_diag && !ops_ok) {
+        if (qkv_diag_n == 0) {
+            GGML_LOG_DEBUG("[PQ2DIAG] can_fuse(3x MUL_MAT) false: checking node ops around %d\n", node_idx);
+            for (int d = 0; d < 6 && node_idx + d < cgraph->n_nodes; ++d) {
+                const ggml_tensor * dn = cgraph->nodes[node_idx + d];
+                GGML_LOG_DEBUG("[PQ2DIAG]   +%d op=%s ne=[%lld,%lld] type=%d\n", d, ggml_op_name(dn->op),
+                               (long long) dn->ne[0], (long long) dn->ne[1], (int) dn->type);
+            }
+        }
+        qkv_diag_n++;
+        return false;
+    }
+    if (!ops_ok) {
         return false;
     }
 
