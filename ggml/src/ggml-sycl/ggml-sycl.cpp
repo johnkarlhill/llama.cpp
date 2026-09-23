@@ -6260,6 +6260,20 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             }
         }
 
+        // R1 experiment: stub all non-MUL_MAT nodes (env GGML_SYCL_R1_STUB=1).
+        // Replace compute with a tiny memset of dst so downstream shapes/pointers
+        // stay valid. Purpose: isolate matvec occupancy from co-resident kernels.
+        static const bool r1_stub = []() {
+            const char * env = getenv("GGML_SYCL_R1_STUB");
+            return env && env[0] == '1';
+        }();
+        if (r1_stub && node->op != GGML_OP_MUL_MAT) {
+            queue_ptr stream = sycl_ctx->stream();
+            SYCL_CHECK(CHECK_TRY_ERROR(
+                (*stream).memset(node->data, 0, ggml_nbytes(node)).wait()));
+            continue;
+        }
+
         bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
         if (!ok) {
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
