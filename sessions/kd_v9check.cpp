@@ -201,10 +201,14 @@ int main() {
     float* cout = (float*)sycl::malloc_device(2*TN*sizeof(float), q);
     // v9 on col0 alone: reference = run(which=9) on col0's y, into first TN floats
     run(cdx, cdy, cout, TC, TN, 9, (uintptr_t)&q); q.wait();
+    std::vector<float> o9ref(TN);
+    q.memcpy(o9ref.data(), cout, TN*sizeof(float)).wait();
     // _ncols<2> on both cols
     run(cdx, cdy, cout, TC, TN, 11, (uintptr_t)&q); q.wait();
     std::vector<float> o11(2*TN);
     q.memcpy(o11.data(), cout, 2*TN*sizeof(float)).wait();
+    printf("2col v9ref row0=%.2f row1=%.2f | ncols row0=%.2f row1=%.2f | col1ncols row0=%.2f\n",
+           o9ref[0], o9ref[1], o11[0], o11[1], o11[TN]);
     // python reference for col0 row0..2 (same math as CPU ref above)
     for (int r = 0; r < 2; r++) {
       double acc = 0.0;
