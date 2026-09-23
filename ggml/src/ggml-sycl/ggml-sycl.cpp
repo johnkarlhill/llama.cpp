@@ -4965,10 +4965,12 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
 // launch. Returns the number of extra nodes consumed (the skipped views + siblings),
 // or 0 when the pattern doesn't hold and the node must run unfused.
 static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
-    // A/B gate: set GGML_SYCL_NO_QKV_FUSE=1 to fall back to per-projection dispatch
+    // Opt-IN gate: dead code on Bonsai-2 (GDN layers pre-fused, full-attn layers have
+    // DUP launches between Q/K/V matmuls). Set GGML_SYCL_QKV_FUSE=1 to experiment;
+    // off by default so the scan never runs on production graphs.
     static const bool no_qkv_fuse = []() {
-        const char * env = getenv("GGML_SYCL_NO_QKV_FUSE");
-        return env && env[0] == '1';
+        const char * env = getenv("GGML_SYCL_QKV_FUSE");
+        return !(env && env[0] == '1');
     }();
     if (no_qkv_fuse) {
         return 0;
@@ -5070,7 +5072,9 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 
 static int ggml_sycl_l2_norm_batch_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     const ggml_tensor * node = cgraph->nodes[node_idx];
-    if (ggml_sycl_info().device_count != 1 || node->type != GGML_TYPE_F32 ||
+    // NOTE: no device_count check here — this box enumerates 2 SYCL devices (B70+B50),
+    // which silently disabled the fusion. Split-buffer check is the real safety gate.
+    if (node->type != GGML_TYPE_F32 ||
         node->src[0]->type != GGML_TYPE_F32 || node->src[0]->ne[0] >= 1024) {
         return 0;
     }
