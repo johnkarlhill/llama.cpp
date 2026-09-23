@@ -203,6 +203,11 @@ int main() {
     run(cdx, cdy, cout, TC, TN, 9, (uintptr_t)&q); q.wait();
     std::vector<float> o9ref(TN);
     q.memcpy(o9ref.data(), cout, TN*sizeof(float)).wait();
+    // oracle vec_dot (1-col generic tpl) on col0: third opinion
+    run(cdx, cdy, cout, TC, TN, 1, (uintptr_t)&q); q.wait();
+    std::vector<float> o1ref(TN);
+    q.memcpy(o1ref.data(), cout, TN*sizeof(float)).wait();
+    printf("2col oracle row0=%.2f row1=%.2f\n", o1ref[0], o1ref[1]);
     // _ncols<2> on both cols
     run(cdx, cdy, cout, TC, TN, 11, (uintptr_t)&q); q.wait();
     std::vector<float> o11(2*TN);
