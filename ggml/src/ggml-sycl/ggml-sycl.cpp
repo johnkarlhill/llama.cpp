@@ -4957,56 +4957,80 @@ static bool ggml_sycl_mul_mat_glu_mmvq_fused(ggml_backend_sycl_context & ctx, gg
 
 // Batch the run of consecutive L2_NORM siblings starting at node_idx into one launch.
 
-// Batch the run of three Q/K/V projection mat-vec siblings sharing one activation into
-// one quantize + one kernel launch. Same constraints as the GLU fusion: no split
-// buffers, DMMV not prioritised, single device.
-static bool ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+
+// Scan-based QKV fusion: Q/K/V projection mat-muls share one activation but are NOT
+// adjacent in the graph (RESHAPE/PERMUTE views of their outputs sit between them).
+// From the first PQ2_0 mat-vec, scan forward past view-class nodes collecting the
+// sibling mat-vecs with the same activation; fuse all found into one quantize + one
+// launch. Returns the number of extra nodes consumed (the skipped views + siblings),
+// or 0 when the pattern doesn't hold and the node must run unfused.
+static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     // A/B gate: set GGML_SYCL_NO_QKV_FUSE=1 to fall back to per-projection dispatch
     static const bool no_qkv_fuse = []() {
         const char * env = getenv("GGML_SYCL_NO_QKV_FUSE");
         return env && env[0] == '1';
     }();
     if (no_qkv_fuse) {
-        return false;
+        return 0;
     }
-    // temp diagnostics: why does the fusion never fire? (log once per layer count)
-    static int qkv_diag_n = 0;
-    const bool qkv_diag = getenv("GGML_SYCL_DEBUG") != nullptr && qkv_diag_n < 12;
-
-    const bool ops_ok = ggml_sycl_can_fuse(cgraph, node_idx, { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_MUL_MAT }, {});
-    if (qkv_diag && !ops_ok) {
-        if (qkv_diag_n == 0) {
-            GGML_LOG_DEBUG("[PQ2DIAG] can_fuse(3x MUL_MAT) false: checking node ops around %d\n", node_idx);
-            for (int d = 0; d < 6 && node_idx + d < cgraph->n_nodes; ++d) {
-                const ggml_tensor * dn = cgraph->nodes[node_idx + d];
-                GGML_LOG_DEBUG("[PQ2DIAG]   +%d op=%s ne=[%lld,%lld] type=%d\n", d, ggml_op_name(dn->op),
-                               (long long) dn->ne[0], (long long) dn->ne[1], (int) dn->type);
-            }
-        }
-        qkv_diag_n++;
-        return false;
-    }
-    if (!ops_ok) {
-        return false;
+    if (ggml_sycl_info().device_count != 1 || g_ggml_sycl_prioritize_dmmv) {
+        return 0;
     }
 
     ggml_tensor * nq = cgraph->nodes[node_idx];
-    ggml_tensor * nk = cgraph->nodes[node_idx + 1];
-    ggml_tensor * nv = cgraph->nodes[node_idx + 2];
+    if (nq->type != GGML_TYPE_F32 || nq->src[1]->type != GGML_TYPE_F32) {
+        return 0;
+    }
     const ggml_tensor * wq = nq->src[0];
+    const ggml_tensor * act = nq->src[1];
+    if (wq->type != GGML_TYPE_PQ2_0 || act->ne[1] > MMVQ_MAX_BATCH_SIZE || act->ne[2] != 1 ||
+        act->ne[3] != 1 || wq->ne[2] != 1 || wq->ne[3] != 1) {
+        return 0;
+    }
+    if (!ggml_is_contiguous(wq) || !ggml_is_contiguous(act) || !ggml_is_contiguous(nq) ||
+        wq->ne[0] % 128 != 0) {
+        return 0;
+    }
+
+    const auto is_view_class = [](ggml_tensor * t) {
+        return ggml_is_empty(t) || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_TRANSPOSE ||
+               t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_NONE ||
+               (t->flags & GGML_TENSOR_FLAG_COMPUTE) == 0;
+    };
+
+    // collect up to two sibling mat-vecs; interleaved view-class nodes are skipped (and
+    // counted for later consumption) since they cost no launch and read the same buffers
+    ggml_tensor * sib[2];
+    int           n_sib = 0;
+    int           last  = node_idx;
+    for (int j = node_idx + 1; j < cgraph->n_nodes && n_sib < 2; ++j) {
+        ggml_tensor * nj = cgraph->nodes[j];
+        if (is_view_class(nj)) {
+            continue;
+        }
+        if (nj->op == GGML_OP_MUL_MAT && nj->type == GGML_TYPE_F32 && nj->src[1] == act &&
+            nj->src[0]->type == GGML_TYPE_PQ2_0 && nj->src[0]->ne[0] == wq->ne[0] &&
+            ggml_is_contiguous(nj->src[0]) && ggml_is_contiguous(nj)) {
+            sib[n_sib++] = nj;
+            last         = j;
+            continue;
+        }
+        break;  // any other launch ends the sibling run
+    }
+    if (n_sib != 2) {
+        return 0;
+    }
+
+    ggml_tensor * nk = sib[0];
+    ggml_tensor * nv = sib[1];
     const ggml_tensor * wk = nk->src[0];
     const ggml_tensor * wv = nv->src[0];
-    const ggml_tensor * act = nq->src[1];
 
-    if (wq->type != GGML_TYPE_PQ2_0) {
-        return false;
-    }
+    // this writes the outputs directly rather than the per-device row slices that
+    // ggml_sycl_op_mul_mat() stitches back together, so it cannot serve split weights
     if (ggml_backend_buffer_is_sycl_split(wq->buffer) || ggml_backend_buffer_is_sycl_split(wk->buffer) ||
         ggml_backend_buffer_is_sycl_split(wv->buffer)) {
-        return false;
-    }
-    if (g_ggml_sycl_prioritize_dmmv) {
-        return false;
+        return 0;
     }
 
     scope_op_debug_print scope_dbg_print(__func__, nq, /*num_src=*/2, " : fused with k + v projections");
@@ -5028,10 +5052,8 @@ static bool ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, gg
                                        (float *) nq->data, (float *) nk->data, (float *) nv->data,
                                        (int) ne00, (int) wq->ne[1], (int) wk->ne[1], (int) wv->ne[1],
                                        stream);
-    return true;
+    return last - node_idx;
 }
-// (the caller then runs the norm through the per-tensor kernel).
-// Returns the number of extra graph nodes consumed, or 0 if the run is shorter than two
 
 static int ggml_sycl_l2_norm_batch_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     const ggml_tensor * node = cgraph->nodes[node_idx];
@@ -6213,9 +6235,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             continue;
         }
 
-        if (node->op == GGML_OP_MUL_MAT && ggml_sycl_mul_mat_qkv_mmvq_fused(*sycl_ctx, cgraph, i)) {
-            i += 2;
-            continue;
+        if (node->op == GGML_OP_MUL_MAT) {
+            const int qkv_skip = ggml_sycl_mul_mat_qkv_mmvq_fused(*sycl_ctx, cgraph, i);
+            if (qkv_skip > 0) {
+                i += qkv_skip;
+                continue;
+            }
         }
 
         bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
