@@ -212,7 +212,7 @@ int main() {
         const block_pq2_0_dbg & wb = cwx[r*NB2 + b];
         float d2 = fp16_to_f32(wb.d);
         for (int c = 0; c < 4; c++) {
-          float d8 = fp16_to_f32(cwy[c].ds[0]);
+          float d8 = fp16_to_f32(cwy[b*4+c].ds[0]);
           int sumi = 0;
           for (int j = 0; j < 4; j++) {
             uint8_t b0 = wb.qs[c*8 + j*2 + 0], b1 = wb.qs[c*8 + j*2 + 1];
@@ -220,8 +220,8 @@ int main() {
             for (int i = 0; i < 4; i++) {
               int cl = (((q16 >> (2*i)) & 3) - 1) & 0xFF;
               int ch = (((q16 >> (2*(i+4))) & 3) - 1) & 0xFF;
-              int al = cwy[c].qs[j*8 + i];
-              int ah = cwy[c].qs[j*8 + i + 4];
+              int al = cwy[b*4+c].qs[j*8 + i];
+              int ah = cwy[b*4+c].qs[j*8 + i + 4];
               sumi += (int8_t)cl * al + (int8_t)ch * ah;
             }
           }
