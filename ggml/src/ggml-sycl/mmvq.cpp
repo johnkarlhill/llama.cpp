@@ -1968,6 +1968,82 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v10(const void * vx, const float * yf,
     });
 }
 
+// v11: correctness experiment - pure FP32 activation dot. Decodes 2-bit weights to
+// {-1,0,1} and FMAs against the F32 activation directly. NO activation quantization
+// anywhere: isolates whether q8_1 quantize noise is what flips "following" vs "Paris".
+// Env-gated GGML_SYCL_PQ2_F32ACT=1. Perf-irrelevant by design (fp32 FMA, no dp4a).
+static __dpct_inline__ void mul_mat_vec_pq2_0_v11(
+        const void * __restrict__ vx, const float * __restrict__ yf,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2);
+    const int row   = item_ct1.get_group(2) * item_ct1.get_local_range(1)
+                    + item_ct1.get_local_id(1);
+
+    if (row >= nrows) return;
+
+    const block_pq2_0 * x = (const block_pq2_0 *) vx;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    float tmp = 0.0f;
+
+    const int group_stride = WARP_SIZE * 4;
+    const int padded = (blocks_per_row + group_stride - 1) / group_stride * group_stride;
+    for (int i0 = 0; i0 < padded; i0 += group_stride) {
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int b    = i0 + lane * 4 + k;
+            const bool ok  = b < blocks_per_row;
+            const int ibx  = row * blocks_per_row + (ok ? b : 0);
+            const float * ychunk = yf + (ok ? b : 0) * QK_PQ2_0;
+
+            float sumf = 0.0f;
+            if (ok) {
+                const float d2 = x[ibx].d;
+                #pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    const uint16_t w0 = *(const uint16_t *)(x[ibx].qs + j*2);
+                    #pragma unroll
+                    for (int i = 0; i < 4; ++i) {
+                        const float cl = (float)(((w0 >> (2*i)) & 3) - 1);
+                        const float ch = (float)(((w0 >> (2*(i+4))) & 3) - 1);
+                        sumf += cl * ychunk[8*j + i] + ch * ychunk[8*j + i + 4];
+                    }
+                }
+                sumf *= d2;
+            }
+            tmp += sumf;
+        }
+    }
+
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        dst[row] = tmp;
+    }
+}
+
+// v11 launcher: 1 row/warp (same shape as v9/v10)
+static void mul_mat_vec_pq2_0_q8_1_sycl_v11(const void * vx, const float * yf,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v11(vx, yf, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 // v4: PQ2_0 MMVQ with Q6_K-like access pattern (tg path, ncols_dst == 1).
 // 8 lanes per 128-elem block, 2 blocks per warp iteration:
 //   lane L in group g (g = L/8), block pair (2i + g):
@@ -3358,8 +3434,17 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_pq2_0_q8_1_sycl\n");
                     // A/B: v9 (pure SWAR MLP, reads pre-quantized q8_1) — v10 fused
                     // parked until its quantize math is validated (MINI: returns 0)
-                    mul_mat_vec_pq2_0_q8_1_sycl_v9(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
-                        ne00, row_diff, stream);
+                    static const bool pq2_f32act = getenv("GGML_SYCL_PQ2_F32ACT") != nullptr
+                        && getenv("GGML_SYCL_PQ2_F32ACT")[0] == '1';
+                    if (pq2_f32act) {
+                        // correctness experiment: F32 activations, no quantize noise
+                        const float * src1_ddf_i_bs = src1_ddf_i + i * src1_padded_col_size * sizeof(float);
+                        mul_mat_vec_pq2_0_q8_1_sycl_v11(src0_dd_i, src1_ddf_i_bs, dst_dd_i_bs,
+                            ne00, row_diff, stream);
+                    } else {
+                        mul_mat_vec_pq2_0_q8_1_sycl_v9(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
+                            ne00, row_diff, stream);
+                    }
                 }
                 {
                     static const bool pq2_dump = getenv("GGML_SYCL_PQ2_DUMP") != nullptr
@@ -4054,6 +4139,10 @@ bool ggml_sycl_mul_mat_vec_q_glu_reorder(enum ggml_type src0_type, enum ggml_glu
                                          int ncols_dst, int stride_col_y_bytes, int stride_col_dst,
                                          dpct::queue_ptr stream) {
     if (src0_type != GGML_TYPE_Q4_K && src0_type != GGML_TYPE_PQ2_0) {
+        return false;
+    }
+    // f32-activation experiment: clean A/B requires the plain v9/v11 route everywhere
+    if (getenv("GGML_SYCL_PQ2_F32ACT") != nullptr && getenv("GGML_SYCL_PQ2_F32ACT")[0] == '1') {
         return false;
     }
     if (glu_op != GGML_GLU_OP_SWIGLU && glu_op != GGML_GLU_OP_GEGLU) {
