@@ -3317,6 +3317,35 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                     mul_mat_vec_pq2_0_q8_1_sycl_switch_ncols(
                         src0_dd_i, src1_ddq_i, dst_dd_i, ne00, row_diff,
                         src1_ncols, stride_col_y, stride_col_dst, stream);
+                    {
+                        static const bool pq2_dump2 = getenv("GGML_SYCL_PQ2_DUMP") != nullptr
+                            && getenv("GGML_SYCL_PQ2_DUMP")[0] == '1';
+                        static int dump2_count = 0;
+                        if (pq2_dump2 && i == 0 && dump2_count < 3) {
+                            dump2_count++;
+                            char fn2[128];
+                            snprintf(fn2, sizeof(fn2), "C:\\llama.cpp-build-sycl\\pq2_pre_%d.bin", dump2_count);
+                            FILE * f2 = fopen(fn2, "wb");
+                            if (f2) {
+                                int m2[8] = { (int)ne10, (int)src1_padded_col_size, (int)row_diff,
+                                              (int)ne00, (int)src1_ncols, (int)src0->ne[1], 0, 0 };
+                                std::vector<char> xb2(320 * sizeof(block_pq2_0));
+                                stream->memcpy(xb2.data(), src0_dd_i, xb2.size()).wait();
+                                size_t yb2_sz = (size_t)(src1_padded_col_size / QK8_1) * sizeof(block_q8_1) * src1_ncols;
+                                std::vector<char> yb2(yb2_sz);
+                                stream->memcpy(yb2.data(), src1_ddq_i, yb2_sz).wait();
+                                std::vector<float> db2(std::min<size_t>(64, (size_t)row_diff) * src1_ncols);
+                                stream->memcpy(db2.data(), dst_dd_i, db2.size()*4).wait();
+                                fwrite(m2, 4, 8, f2);
+                                fwrite(xb2.data(), 1, xb2.size(), f2);
+                                fwrite(yb2.data(), 1, yb2_sz, f2);
+                                fwrite(db2.data(), 4, db2.size(), f2);
+                                fclose(f2);
+                                printf("PQ2_PRE_%d ne10=%d pad=%d ncols=%d rowdiff=%d\n",
+                                       dump2_count, ne10, (int)src1_padded_col_size, (int)src1_ncols, (int)row_diff);
+                            }
+                        }
+                    }
                     return;
                 } else if (i == 0 || src1_ncols == 1) {
                     const int stride_col_y   = src1_padded_col_size / QK8_1;
