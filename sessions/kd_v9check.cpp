@@ -199,6 +199,9 @@ int main() {
     q.memcpy(cdx, cwx.data(), cwx.size()*sizeof(block_pq2_0_dbg)).wait();
     q.memcpy(cdy, cwy.data(), cwy.size()*sizeof(block_q8_1_dbg)).wait();
     float* cout = (float*)sycl::malloc_device(2*TN*sizeof(float), q);
+    // make col1 IDENTICAL to col0: kernel col1 output must equal col0 output
+    memcpy(cwy.data() + NYB2, cwy.data(), NYB2*sizeof(block_q8_1_dbg));
+    q.memcpy(cdy, cwy.data(), cwy.size()*sizeof(block_q8_1_dbg)).wait();
     // v9 on col0 alone: reference = run(which=9) on col0's y, into first TN floats
     run(cdx, cdy, cout, TC, TN, 9, (uintptr_t)&q); q.wait();
     std::vector<float> o9ref(TN);
