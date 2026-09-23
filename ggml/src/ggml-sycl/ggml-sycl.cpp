@@ -656,13 +656,18 @@ ggml_backend_sycl_buffer_init_tensor(ggml_backend_buffer_t buffer,
             case GGML_TYPE_Q3_K:
             case GGML_TYPE_Q4_K:
             case GGML_TYPE_Q5_K:
-            case GGML_TYPE_Q6_K:
-            case GGML_TYPE_PQ2_0:{
+            case GGML_TYPE_Q6_K:{
                 ggml_tensor_extra_gpu * extra = new ggml_tensor_extra_gpu{};
                 tensor->extra                 = extra;
                 ctx->tensor_extras.push_back(extra);
                 break;
             }
+            // NOTE: GGML_TYPE_PQ2_0 deliberately NOT here. Giving PQ2_0 an extra at
+            // init makes op_mul_mat reorder PQ2_0 weights and SoA-quantize src1 on
+            // the first decode, which routes decode away from the proven AOS v9
+            // body (garbage output, 3.31 vs 17.39 t/s). PQ2_0 must keep the
+            // extra==nullptr AOS flow until the SoA/switch_ncols kernels are
+            // validated (unit-tested) for ncols==1..8.
             default:
                 break;
         }
