@@ -5289,6 +5289,39 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             printf("[FFN_DIAG] actdump c%ld:", call_idx);
             for (int r = 0; r < 64; ++r) { printf(" %.6g", act_host[r]); }
             printf("\n");
+            // down-projection bisect: find the first real node after the GLU node
+            // (the down matmul), compute it early and dump its dst. The loop will
+            // recompute it later — harmless for a pure matvec (same inputs).
+            if (ffn_diag >= 6) {
+                int dj = -1;
+                for (int d = 3; d < 9 && node_idx + d < cgraph->n_nodes; ++d) {
+                    ggml_tensor * dn = cgraph->nodes[node_idx + d];
+                    if (ggml_sycl_is_view_or_noop(dn) || !(dn->flags & GGML_TENSOR_FLAG_COMPUTE)) continue;
+                    dj = node_idx + d;
+                    break;
+                }
+                if (dj >= 0) {
+                    ggml_tensor * dn = cgraph->nodes[dj];
+                    printf("[FFN_DIAG] next node +%d op=%s\n", dj - node_idx, ggml_op_name(dn->op));
+                    fflush(stdout);
+                    if (dn->op == GGML_OP_MUL_MAT) {
+                        float sh[8] = {0};
+                        (void) stream->memcpy(sh, dn->src[1]->data, 8 * sizeof(float));
+                        stream->wait();
+                        printf("[FFN_DIAG] down c%ld src1[0..7] =", call_idx);
+                        for (int q = 0; q < 8; ++q) printf(" %.6g", sh[q]);
+                        printf("\n");
+                        bool okd = ggml_sycl_compute_forward(ctx, dn);
+                        GGML_ASSERT(okd);
+                        float dh[8] = {0};
+                        (void) stream->memcpy(dh, dn->data, 8 * sizeof(float));
+                        stream->wait();
+                        printf("[FFN_DIAG] down c%ld dst[0..7] =", call_idx);
+                        for (int q = 0; q < 8; ++q) printf(" %.6g", dh[q]);
+                        printf("\n");
+                    }
+                }
+            }
             fflush(stdout);
             return 3;
         }
