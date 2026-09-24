@@ -5156,11 +5156,13 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 // outputs. Returns the number of extra nodes consumed, or 0 when the pattern fails.
 static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     // Opt-IN gate: experimental batched gate+up. Off by default.
-    static const bool no_ffn_fuse = []() {
+    // =1: batched gate+up (v13), GLU runs as its own node.
+    // =2: batched gate+up + fused swiglu epilogue (v14), consumes the GLU node.
+    static const int ffn_fuse_mode = []() {
         const char * env = getenv("GGML_SYCL_FFN_FUSE");
-        return !(env && env[0] == '1');
+        return env ? atoi(env) : 0;
     }();
-    if (no_ffn_fuse) {
+    if (ffn_fuse_mode <= 0) {
         return 0;
     }
     if (g_ggml_sycl_prioritize_dmmv) {
@@ -5200,7 +5202,8 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         return 0;
     }
 
-    const bool fused_glu = ggml_get_glu_op(nglu) == GGML_GLU_OP_SWIGLU &&
+    const bool fused_glu = ffn_fuse_mode >= 2 &&
+                           ggml_get_glu_op(nglu) == GGML_GLU_OP_SWIGLU &&
                            ggml_are_same_shape(ngate, nup) && ggml_are_same_shape(ngate, nglu) &&
                            ggml_is_contiguous(nglu) && nglu->type == GGML_TYPE_F32 &&
                            // single-use + not-graph-output safety for writing the GLU
