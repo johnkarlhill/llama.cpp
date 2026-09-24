@@ -6557,7 +6557,23 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         if (node->op == GGML_OP_MUL_MAT) {
             const int ffn_skip = ggml_sycl_mul_mat_ffn_mmvq_fused(*sycl_ctx, cgraph, i);
             if (ffn_skip > 0) {
+                static int down_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
+                static long down_calls = 0;
+                const long dc = down_calls++;
+                ggml_tensor * down_node = (i + ffn_skip < cgraph->n_nodes) ? cgraph->nodes[i + ffn_skip] : nullptr;
                 i += ffn_skip;
+                if (down_diag >= 6 && down_node && down_node->op == GGML_OP_MUL_MAT && dc <= 1) {
+                    // compute the down matmul here and dump its dst
+                    bool okd = ggml_sycl_compute_forward(*sycl_ctx, down_node);
+                    GGML_ASSERT(okd);
+                    float dh[8] = {0};
+                    (*sycl_ctx->stream()).memcpy(dh, down_node->data, 8 * sizeof(float)).wait();
+                    printf("[FFN_DIAG] down c%ld dst[0..7] =", dc);
+                    for (int q = 0; q < 8; ++q) printf(" %.6g", dh[q]);
+                    printf("\n");
+                    fflush(stdout);
+                    i += 1;  // down node consumed here
+                }
                 continue;
             }
         }
