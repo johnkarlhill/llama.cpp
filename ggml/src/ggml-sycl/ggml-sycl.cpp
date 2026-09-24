@@ -5249,9 +5249,9 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             ggml_sycl_pool_alloc<float> hglu(ctx.pool(), cmp_rows);
             (void) stream->memcpy(hglu.get(), nglu->data, cmp_rows * sizeof(float));
             stream->wait();
-            FILE * df = fopen("C:/llama.cpp-build-sycl/ffn_v14_dump.bin", "wb");
-            if (df) { fwrite(hglu.get(), sizeof(float), cmp_rows, df); fclose(df); }
-            printf("[FFN_DIAG] dumped %d v14 rows\n", cmp_rows);
+            printf("[FFN_DIAG] v14dump:");
+            for (int r = 0; r < cmp_rows; ++r) { printf(" %.6g", hglu.get()[r]); }
+            printf("\n[FFN_DIAG] dumped %d v14 rows\n", cmp_rows);
             fflush(stdout);
             return 3;
         }
@@ -5307,9 +5307,11 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             (void) stream->memcpy(hg13.get(), ngate->data, cmp13 * sizeof(float));
             (void) stream->memcpy(hu13.get(), nup->data, cmp13 * sizeof(float));
             stream->wait();
-            FILE * df = fopen("C:/llama.cpp-build-sycl/ffn_v13_dump.bin", "wb");
-            if (df) { fwrite(hg13.get(), sizeof(float), cmp13, df); fwrite(hu13.get(), sizeof(float), cmp13, df); fclose(df); }
-            printf("[FFN_DIAG] dumped %d v13 gate/up rows\n", cmp13);
+            printf("[FFN_DIAG] v13gdump:");
+            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13.get()[r]); }
+            printf("\n[FFN_DIAG] v13udump:");
+            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hu13.get()[r]); }
+            printf("\n[FFN_DIAG] dumped %d v13 gate/up rows\n", cmp13);
             fflush(stdout);
             return 2;
         }
