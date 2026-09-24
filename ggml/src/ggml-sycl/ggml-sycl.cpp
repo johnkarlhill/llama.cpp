@@ -5159,6 +5159,8 @@ static bool ggml_sycl_is_view_or_noop(const ggml_tensor * t);
 static long g_ffn_attempts = 0;
 static long g_ffn_fires = 0;
 
+static long g_ffn_decline[8] = {0};
+
 static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     // Opt-IN gate: experimental batched gate+up. Off by default.
     // =1: batched gate+up (v13), GLU runs as its own node.
@@ -5178,33 +5180,40 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 
     ggml_tensor * ngate = cgraph->nodes[node_idx];
     if (ngate->type != GGML_TYPE_F32 || ngate->src[1]->type != GGML_TYPE_F32) {
+        ++g_ffn_decline[0];
         return 0;
     }
     const ggml_tensor * wg = ngate->src[0];
     const ggml_tensor * act = ngate->src[1];
     if (wg->type != GGML_TYPE_PQ2_0 || act->ne[1] != 1 || act->ne[2] != 1 ||
+        ++g_ffn_decline[1];
         act->ne[3] != 1 || wg->ne[2] != 1 || wg->ne[3] != 1) {
         return 0;
     }
     if (!ggml_is_contiguous(wg) || !ggml_is_contiguous(act) || !ggml_is_contiguous(ngate) ||
+        ++g_ffn_decline[2];
         wg->ne[0] % 128 != 0) {
         return 0;
     }
 
     // the GLU consumer must directly follow: gate-matmul, up-matmul, GLU
-    if (node_idx + 2 >= cgraph->n_nodes) {
+    ++g_ffn_decline[3];
+        if (node_idx + 2 >= cgraph->n_nodes) {
         return 0;
     }
     ggml_tensor * nup   = cgraph->nodes[node_idx + 1];
     ggml_tensor * nglu  = cgraph->nodes[node_idx + 2];
-    if (nup->op != GGML_OP_MUL_MAT || nup->type != GGML_TYPE_F32 || nup->src[1] != act) {
+    if (nup->op != GGML_OP_MUL_MAT || nup->type != GGML_TYPE_F32 || ++g_ffn_decline[4];
+        nup->src[1] != act) {
         return 0;
     }
-    if (nglu->op != GGML_OP_GLU || nglu->src[0] != ngate || nglu->src[1] != nup) {
+    if (nglu->op != GGML_OP_GLU || nglu->src[0] != ngate || ++g_ffn_decline[5];
+        nglu->src[1] != nup) {
         return 0;
     }
     const ggml_tensor * wu = nup->src[0];
     if (wu->type != GGML_TYPE_PQ2_0 || wu->ne[0] != wg->ne[0] || !ggml_is_contiguous(wu) ||
+        ++g_ffn_decline[6];
         !ggml_is_contiguous(nup)) {
         return 0;
     }
@@ -5221,7 +5230,8 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 
     // this writes the outputs directly rather than the per-device row slices that
     // ggml_sycl_op_mul_mat() stitches back together, so it cannot serve split weights
-    if (ggml_backend_buffer_is_sycl_split(wg->buffer) || ggml_backend_buffer_is_sycl_split(wu->buffer)) {
+    if (ggml_backend_buffer_is_sycl_split(wg->buffer) || ++g_ffn_decline[7];
+        ggml_backend_buffer_is_sycl_split(wu->buffer)) {
         return 0;
     }
 
@@ -5440,6 +5450,10 @@ struct FfnRateSummary {
         if (!e || e[0] != '1') return;
         printf("[FFN_RATE] final fires=%ld attempts=%ld declined=%ld\n",
                g_ffn_fires, g_ffn_attempts, g_ffn_attempts - g_ffn_fires);
+        printf("[FFN_RATE] declines: g1type=%ld g2ne=%ld g3contig=%ld g4bounds=%ld "
+               "g5up=%ld g6glu=%ld g7wu=%ld g8split=%ld\n",
+               g_ffn_decline[0], g_ffn_decline[1], g_ffn_decline[2], g_ffn_decline[3],
+               g_ffn_decline[4], g_ffn_decline[5], g_ffn_decline[6], g_ffn_decline[7]);
         fflush(stdout);
     }
 };
