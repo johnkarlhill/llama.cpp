@@ -5280,6 +5280,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             const int nrows = (int) wu->ne[1];
             const int cmp_rows = nrows < 2048 ? nrows : 2048;
             static float hglu_host[2048];
+            stream->wait();   // sync FIRST, then read
             (void) stream->memcpy(hglu_host, nglu->data, cmp_rows * sizeof(float));
             stream->wait();
             printf("[FFN_DIAG] v14dump c%ld:", call_idx);
