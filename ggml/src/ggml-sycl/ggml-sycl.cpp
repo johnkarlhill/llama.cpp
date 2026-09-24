@@ -5240,7 +5240,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                            (float *) nglu->data,
                                            (int) ne00, (int) wu->ne[1],
                                            stream);
-        if (ffn_diag && (call_idx == 0 || call_idx == 512 || call_idx == 1024)) {
+        if (ffn_diag && (call_idx == 0 || call_idx == 1 || call_idx == 2 || call_idx == 512)) {
             float host[4] = {0, 0, 0, 0};
             (void) stream->memcpy(host, nglu->data, 4 * sizeof(float));
             stream->wait();
@@ -5259,7 +5259,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                            (float *) ngate->data, (float *) nup->data,
                                            (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
                                            stream);
-        if (ffn_diag13 && (call_idx == 0 || call_idx == 512 || call_idx == 1024)) {
+        if (ffn_diag13 && (call_idx == 0 || call_idx == 1 || call_idx == 2 || call_idx == 512)) {
             float hg[4] = {0, 0, 0, 0};
             float hu[4] = {0, 0, 0, 0};
             (void) stream->memcpy(hg, ngate->data, 4 * sizeof(float));
