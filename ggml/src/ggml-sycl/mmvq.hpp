@@ -106,4 +106,11 @@ void mul_mat_vec_pq2_0_batched_sycl_v14(
     int ncols, int nglu,
     dpct::queue_ptr stream);
 
+// Diag variant: writes raw [tg, tu] pairs (2 floats/row) for epilogue bisection.
+void mul_mat_vec_pq2_0_batched_sycl_v14d(
+    const void * vg, const void * vu,
+    const void * vy, float * dout,
+    int ncols, int nglu,
+    dpct::queue_ptr stream);
+
 #endif // GGML_SYCL_MMVQ_HPP

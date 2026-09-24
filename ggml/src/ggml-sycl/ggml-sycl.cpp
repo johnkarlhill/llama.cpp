@@ -5233,9 +5233,24 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                           src1_padded_cols, stream);
 
     if (fused_glu) {
-        static bool ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e && e[0] == '1'; }();
+        static int ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
         static long ffn_calls = 0;
         const long call_idx = ffn_calls++;
+        if (ffn_diag == 2 && (call_idx == 1 || call_idx == 2)) {
+            // bisect: run the raw-pair variant into a temp buffer and dump
+            ggml_sycl_pool_alloc<float> diag_alloc(ctx.pool(), (size_t) wu->ne[1] * 2);
+            mul_mat_vec_pq2_0_batched_sycl_v14d(wg->data, wu->data, src1_ddq,
+                                                diag_alloc.get(),
+                                                (int) ne00, (int) wu->ne[1],
+                                                stream);
+            float h[8] = {0};
+            (void) stream->memcpy(h, diag_alloc.get(), 8 * sizeof(float));
+            stream->wait();
+            printf("[FFN_DIAG] v14d call=%ld tg[0..3]=%.6g %.6g %.6g %.6g tu[0..3]=%.6g %.6g %.6g %.6g\n",
+                   call_idx, h[0], h[2], h[4], h[6], h[1], h[3], h[5], h[7]);
+            fflush(stdout);
+            return 3;
+        }
         mul_mat_vec_pq2_0_batched_sycl_v14(wg->data, wu->data, src1_ddq,
                                            (float *) nglu->data,
                                            (int) ne00, (int) wu->ne[1],
