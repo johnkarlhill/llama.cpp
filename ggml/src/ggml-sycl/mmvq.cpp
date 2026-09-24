@@ -2096,6 +2096,84 @@ static void mul_mat_vec_pq2_0_batched_sycl_v14(const void * vg, const void * vu,
     });
 }
 
+// v14w: v14 + also writes the raw gate/up results (matches v13's buffer side
+// effects) — bisects whether the corruption comes from leaving ngate/nup
+// unwritten in the fused path.
+static __dpct_inline__ void mul_mat_vec_pq2_0_v14w(
+        const void * __restrict__ vg, const void * __restrict__ vu,
+        const void * __restrict__ vy,
+        float * __restrict__ dglu, float * __restrict__ dgate, float * __restrict__ dup,
+        const int ncols, const int nglu,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane = item_ct1.get_local_id(2);
+    const int row  = item_ct1.get_group(2) * item_ct1.get_local_range(1)
+                   + item_ct1.get_local_id(1);
+    if (row >= nglu) return;
+
+    const block_pq2_0 * xg = (const block_pq2_0 *) vg;
+    const block_pq2_0 * xu = (const block_pq2_0 *) vu;
+    const block_q8_1  * y  = (const block_q8_1  *) vy;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+
+    const int group_stride = WARP_SIZE * 4;
+    const int padded = (blocks_per_row + group_stride - 1) / group_stride * group_stride;
+
+    float tg = 0.0f;
+    float tu = 0.0f;
+    for (int i0 = 0; i0 < padded; i0 += group_stride) {
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int b    = i0 + lane * 4 + k;
+            const bool ok  = b < blocks_per_row;
+            const int ibx  = row * blocks_per_row + (ok ? b : 0);
+            const int iby0 = (ok ? b : 0) * (QK_PQ2_0 / QK8_1);
+            float dg = 0.0f;
+            float du = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+                if (ok) {
+                    dg += vec_dot_pq2_0_q8_1_swar(&xg[ibx], &y[iby0], c);
+                    du += vec_dot_pq2_0_q8_1_swar(&xu[ibx], &y[iby0], c);
+                }
+            }
+            tg += dg;
+            tu += du;
+        }
+    }
+
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tg += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tg, mask);
+        tu += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tu, mask);
+    }
+
+    if (lane == 0) {
+        if (dgate) { dgate[row] = tg; }
+        if (dup)   { dup[row]   = tu; }
+        dglu[row] = op_silu(tg) * tu;
+    }
+}
+
+static void mul_mat_vec_pq2_0_batched_sycl_v14w(const void * vg, const void * vu,
+                                        const void * vy, float * dglu,
+                                        float * dgate, float * dup,
+                                        const int ncols, const int nglu,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nglu);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v14w(vg, vu, vy, dglu, dgate, dup, ncols, nglu, item_ct1);
+            });
+    });
+}
+
 // v14d: diag variant — writes raw [tg, tu] pairs (2 floats per row) instead of the
 // swiglu result, for bisecting the fused epilogue against separate gate/up matvecs.
 static void mul_mat_vec_pq2_0_batched_sycl_v14d(const void * vg, const void * vu,

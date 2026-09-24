@@ -5252,10 +5252,19 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             // dump first 2048 rows of nglu (or gate/up when not fused) to files for
             // offline cross-run comparison — no in-graph v13 launch (its ngate/nup
             // buffers may be recycled by the scheduler once the nodes are skipped)
+            if (ffn_diag == 4) {
+                mul_mat_vec_pq2_0_batched_sycl_v14w(wg->data, wu->data, src1_ddq,
+                                                    (float *) nglu->data,
+                                                    (float *) ngate->data,
+                                                    (float *) nup->data,
+                                                    (int) ne00, (int) wu->ne[1],
+                                                    stream);
+            } else {
             mul_mat_vec_pq2_0_batched_sycl_v14(wg->data, wu->data, src1_ddq,
                                                (float *) nglu->data,
                                                (int) ne00, (int) wu->ne[1],
                                                stream);
+            }
             const int nrows = (int) wu->ne[1];
             const int cmp_rows = nrows < 2048 ? nrows : 2048;
             static float hglu_host[2048];

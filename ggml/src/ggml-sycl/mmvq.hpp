@@ -113,4 +113,12 @@ void mul_mat_vec_pq2_0_batched_sycl_v14d(
     int ncols, int nglu,
     dpct::queue_ptr stream);
 
+// v14 + also writes the raw gate/up results (v13's buffer side effects) —
+// bisects whether corruption comes from leaving ngate/nup unwritten.
+void mul_mat_vec_pq2_0_batched_sycl_v14w(
+    const void * vg, const void * vu,
+    const void * vy, float * dglu, float * dgate, float * dup,
+    int ncols, int nglu,
+    dpct::queue_ptr stream);
+
 #endif // GGML_SYCL_MMVQ_HPP
