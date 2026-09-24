@@ -5248,7 +5248,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         const long call_idx = ffn_calls++;
         printf("[FFN_DIAG] fused branch, call=%ld diag=%d\n", call_idx, ffn_diag);
         fflush(stdout);
-        if (ffn_diag >= 3 && call_idx <= 1) {
+        if (ffn_diag >= 3 && (call_idx == 0 || call_idx == 1)) {
             // dump first 2048 rows of nglu (or gate/up when not fused) to files for
             // offline cross-run comparison — no in-graph v13 launch (its ngate/nup
             // buffers may be recycled by the scheduler once the nodes are skipped)
@@ -5261,7 +5261,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             static float hglu_host[2048];
             (void) stream->memcpy(hglu_host, nglu->data, cmp_rows * sizeof(float));
             stream->wait();
-            printf("[FFN_DIAG] v14dump:");
+            printf("[FFN_DIAG] v14dump c%ld:", call_idx);
             for (int r = 0; r < cmp_rows; ++r) { printf(" %.6g", hglu_host[r]); }
             printf("\n[FFN_DIAG] dumped %d v14 rows\n", cmp_rows);
             fflush(stdout);
@@ -5311,16 +5311,16 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                            (float *) ngate->data, (float *) nup->data,
                                            (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
                                            stream);
-        if (ffn_diag13 == 3 && call_idx == 0) {
+        if (ffn_diag13 == 3 && (call_idx == 0 || call_idx == 1)) {
             const int nrows13 = (int) wg->ne[1];
             const int cmp13 = nrows13 < 2048 ? nrows13 : 2048;
             static float hg13_host[2 * 2048];
             (void) stream->memcpy(hg13_host, ngate->data, cmp13 * sizeof(float));
             (void) stream->memcpy(hg13_host + cmp13, nup->data, cmp13 * sizeof(float));
             stream->wait();
-            printf("[FFN_DIAG] v13gdump:");
+            printf("[FFN_DIAG] v13gdump c%ld:", call_idx);
             for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13_host[r]); }
-            printf("\n[FFN_DIAG] v13udump:");
+            printf("\n[FFN_DIAG] v13udump c%ld:", call_idx);
             for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13_host[cmp13 + r]); }
             printf("\n[FFN_DIAG] dumped %d v13 gate/up rows\n", cmp13);
             fflush(stdout);
