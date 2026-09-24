@@ -5232,6 +5232,16 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     quantize_row_q8_1_sycl<quantize_q8_1>((const float *) act->data, src1_ddq, (int) ne00, 1,
                                           src1_padded_cols, stream);
 
+    {
+        static bool env_probe = []() {
+            const char * f = getenv("GGML_SYCL_FFN_FUSE");
+            const char * d = getenv("GGML_SYCL_FFN_DIAG");
+            printf("[FFN_DIAG] hook env: FUSE=%s DIAG=%s\n", f?f:"<unset>", d?d:"<unset>");
+            fflush(stdout);
+            return true;
+        }();
+        (void) env_probe;
+    }
     if (fused_glu) {
         static int ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
         static long ffn_calls = 0;
