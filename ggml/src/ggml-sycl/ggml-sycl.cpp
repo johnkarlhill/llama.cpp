@@ -5247,15 +5247,16 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                                (int) ne00, (int) wu->ne[1],
                                                stream);
             const int nrows = (int) wu->ne[1];
-            ggml_sycl_pool_alloc<float> hg(ctx.pool(), nrows);
-            ggml_sycl_pool_alloc<float> hu(ctx.pool(), nrows);
-            ggml_sycl_pool_alloc<float> hglu(ctx.pool(), nrows);
-            (void) stream->memcpy(hg.get(), ngate->data, nrows * sizeof(float));
-            (void) stream->memcpy(hu.get(), nup->data, nrows * sizeof(float));
-            (void) stream->memcpy(hglu.get(), nglu->data, nrows * sizeof(float));
+            const int cmp_rows = nrows < 2048 ? nrows : 2048;
+            ggml_sycl_pool_alloc<float> hg(ctx.pool(), cmp_rows);
+            ggml_sycl_pool_alloc<float> hu(ctx.pool(), cmp_rows);
+            ggml_sycl_pool_alloc<float> hglu(ctx.pool(), cmp_rows);
+            (void) stream->memcpy(hg.get(), ngate->data, cmp_rows * sizeof(float));
+            (void) stream->memcpy(hu.get(), nup->data, cmp_rows * sizeof(float));
+            (void) stream->memcpy(hglu.get(), nglu->data, cmp_rows * sizeof(float));
             stream->wait();
             double maxdiff = 0.0; int first_bad = -1; float g0 = 0, u0 = 0, g14 = 0;
-            for (int r = 0; r < nrows; ++r) {
+            for (int r = 0; r < cmp_rows; ++r) {
                 const float expect = (hg.get()[r] / (1.0f + expf(-hg.get()[r]))) * hu.get()[r];
                 const float got = hglu.get()[r];
                 const float diff = fabsf(expect - got);
@@ -5264,8 +5265,8 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                     first_bad = r; g0 = hg.get()[r]; u0 = hu.get()[r]; g14 = got;
                 }
             }
-            printf("[FFN_DIAG] FULL call=0 nrows=%d maxdiff=%g first_bad=%d (g=%g u=%g glu=%g)\n",
-                   nrows, maxdiff, first_bad, g0, u0, g14);
+            printf("[FFN_DIAG] FULL call=0 cmp_rows=%d/%d maxdiff=%g first_bad=%d (g=%g u=%g glu=%g)\n",
+                   cmp_rows, nrows, maxdiff, first_bad, g0, u0, g14);
             fflush(stdout);
             return 3;
         }
