@@ -5264,6 +5264,12 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             printf("[FFN_DIAG] v14dump c%ld:", call_idx);
             for (int r = 0; r < cmp_rows; ++r) { printf(" %.6g", hglu_host[r]); }
             printf("\n[FFN_DIAG] dumped %d v14 rows\n", cmp_rows);
+            static float act_host[2 * 64];
+            (void) stream->memcpy(act_host, act->data, 64 * sizeof(float));
+            stream->wait();
+            printf("[FFN_DIAG] actdump c%ld:", call_idx);
+            for (int r = 0; r < 64; ++r) { printf(" %.6g", act_host[r]); }
+            printf("\n");
             fflush(stdout);
             return 3;
         }
@@ -5318,6 +5324,12 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             (void) stream->memcpy(hg13_host, ngate->data, cmp13 * sizeof(float));
             (void) stream->memcpy(hg13_host + cmp13, nup->data, cmp13 * sizeof(float));
             stream->wait();
+            static float act_host13[2 * 64];
+            (void) stream->memcpy(act_host13, act->data, 64 * sizeof(float));
+            stream->wait();
+            printf("[FFN_DIAG] actdump13 c%ld:", call_idx);
+            for (int r = 0; r < 64; ++r) { printf(" %.6g", act_host13[r]); }
+            printf("\n");
             printf("[FFN_DIAG] v13gdump c%ld:", call_idx);
             for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13_host[r]); }
             printf("\n[FFN_DIAG] v13udump c%ld:", call_idx);
