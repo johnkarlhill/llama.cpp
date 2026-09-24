@@ -2111,7 +2111,7 @@ static __dpct_inline__ void ffn_glu_epilogue(const float * dgate, const float * 
 void ffn_glu_epilogue_sycl(const float * dgate, const float * dup, float * dglu,
                            const int n, const int stride, dpct::queue_ptr stream) {
     const int nblock = (n + 255) / 256;
-    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, nblock),
+    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, nblock * 256),
                                            sycl::range<3>(1, 1, 256)),
                          [=](sycl::nd_item<3> item_ct1) {
                              ffn_glu_epilogue(dgate, dup, dglu, n, stride, item_ct1);
