@@ -5305,6 +5305,14 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                 if (dj >= 0) {
                     ggml_tensor * dn = cgraph->nodes[dj];
                     printf("[FFN_DIAG] next node +%d op=%s\n", dj - node_idx, ggml_op_name(dn->op));
+                    for (int d = 0; d < 8 && node_idx + d < cgraph->n_nodes; ++d) {
+                        ggml_tensor * w = cgraph->nodes[node_idx + d];
+                        printf("[FFN_DIAG]   +%d op=%-8s dst=%s", d, ggml_op_name(w->op), w->name);
+                        for (int q = 0; q < GGML_MAX_SRC && w->src[q]; ++q) {
+                            printf(" src%d=%s(%s)", q, w->src[q]->name, ggml_op_name(w->src[q]->op));
+                        }
+                        printf("\n");
+                    }
                     fflush(stdout);
                     if (dn->op == GGML_OP_MUL_MAT) {
                         float sh[8] = {0};
