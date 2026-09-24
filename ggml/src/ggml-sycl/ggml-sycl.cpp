@@ -5156,6 +5156,9 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 // outputs. Returns the number of extra nodes consumed, or 0 when the pattern fails.
 static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct ggml_tensor * dst);
 static bool ggml_sycl_is_view_or_noop(const ggml_tensor * t);
+static long g_ffn_attempts = 0;
+static long g_ffn_fires = 0;
+
 static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     // Opt-IN gate: experimental batched gate+up. Off by default.
     // =1: batched gate+up (v13), GLU runs as its own node.
@@ -5167,7 +5170,9 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     if (ffn_fuse_mode <= 0) {
         return 0;
     }
+    ++g_ffn_attempts;
     if (g_ggml_sycl_prioritize_dmmv) {
+        --g_ffn_attempts;
         return 0;
     }
 
@@ -5418,7 +5423,27 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
             fflush(stdout);
         }
     }
+    ++g_ffn_fires;
+    static bool ff_rate = []() { const char * e = getenv("GGML_SYCL_FFN_FIRERATE"); return e && e[0]=='1'; }();
+    if (ff_rate && g_ffn_fires % 2048 == 0) {
+        printf("[FFN_RATE] fires=%ld attempts=%ld\n", g_ffn_fires, g_ffn_attempts);
+        fflush(stdout);
+    }
     return 2;
+}
+
+// FFN fire-rate summary printed once at process exit
+namespace {
+struct FfnRateSummary {
+    ~FfnRateSummary() {
+        const char * e = getenv("GGML_SYCL_FFN_FIRERATE");
+        if (!e || e[0] != '1') return;
+        printf("[FFN_RATE] final fires=%ld attempts=%ld declined=%ld\n",
+               g_ffn_fires, g_ffn_attempts, g_ffn_attempts - g_ffn_fires);
+        fflush(stdout);
+    }
+};
+static FfnRateSummary ffn_rate_summary_inst;
 }
 
 static int ggml_sycl_l2_norm_batch_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
