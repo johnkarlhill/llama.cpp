@@ -5234,34 +5234,42 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 
     if (fused_glu) {
         static bool ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e && e[0] == '1'; }();
-        if (ffn_diag) {
-            // one-time: pointer aliasing map + first outputs
-            printf("[FFN_DIAG] wg=%p wu=%p ngate=%p nup=%p nglu=%p act=%p q8=%p ne00=%lld ng=%lld nu=%lld\n",
-                   wg->data, wu->data, (void *) ngate->data, (void *) nup->data,
-                   (void *) nglu->data, (void *) act->data, (void *) src1_ddq,
-                   (long long) ne00, (long long) wg->ne[1], (long long) wu->ne[1]);
-            fflush(stdout);
-        }
+        static long ffn_calls = 0;
+        const long call_idx = ffn_calls++;
         mul_mat_vec_pq2_0_batched_sycl_v14(wg->data, wu->data, src1_ddq,
                                            (float *) nglu->data,
                                            (int) ne00, (int) wu->ne[1],
                                            stream);
-        if (ffn_diag) {
-            // wait, then dump first 4 GLU outputs to host
+        if (ffn_diag && (call_idx == 0 || call_idx == 512 || call_idx == 1024)) {
             float host[4] = {0, 0, 0, 0};
             (void) stream->memcpy(host, nglu->data, 4 * sizeof(float));
             stream->wait();
-            printf("[FFN_DIAG] nglu[0..3] = %g %g %g %g\n", host[0], host[1], host[2], host[3]);
+            printf("[FFN_DIAG] v14 call=%ld nglu[0..3] = %.6g %.6g %.6g %.6g\n",
+                   call_idx, host[0], host[1], host[2], host[3]);
             fflush(stdout);
-            ffn_diag = false;  // print once (non-const local)
         }
         return 3;
     }
 
-    mul_mat_vec_pq2_0_batched_sycl_v13(wg->data, wu->data, src1_ddq,
-                                       (float *) ngate->data, (float *) nup->data,
-                                       (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
-                                       stream);
+    {
+        static bool ffn_diag13 = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e && e[0] == '1'; }();
+        static long ffn_calls13 = 0;
+        const long call_idx = ffn_calls13++;
+        mul_mat_vec_pq2_0_batched_sycl_v13(wg->data, wu->data, src1_ddq,
+                                           (float *) ngate->data, (float *) nup->data,
+                                           (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
+                                           stream);
+        if (ffn_diag13 && (call_idx == 0 || call_idx == 512 || call_idx == 1024)) {
+            float hg[4] = {0, 0, 0, 0};
+            float hu[4] = {0, 0, 0, 0};
+            (void) stream->memcpy(hg, ngate->data, 4 * sizeof(float));
+            (void) stream->memcpy(hu, nup->data, 4 * sizeof(float));
+            stream->wait();
+            printf("[FFN_DIAG] v13 call=%ld gate[0..3] = %.6g %.6g %.6g %.6g | up[0..3] = %.6g %.6g %.6g %.6g\n",
+                   call_idx, hg[0], hg[1], hg[2], hg[3], hu[0], hu[1], hu[2], hu[3]);
+            fflush(stdout);
+        }
+    }
     return 2;
 }
 
