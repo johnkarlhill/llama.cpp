@@ -6597,6 +6597,35 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             continue;
         }
 
+        // DIAG>=7: mode-agnostic probes at identical loop positions in FUSE=1 and
+        // FUSE=2 runs — act feeding the gate matmul, and nglu as seen by the
+        // prism sign-flip MUL (src0 of the MUL that follows the GLU node).
+        static const int diag7 = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
+        static long d7_gate = 0, d7_mul = 0;
+        if (diag7 >= 7 && node->op == GGML_OP_MUL_MAT && node->name &&
+            strncmp(node->name, "ffn_gate", 8) == 0 && d7_gate <= 1) {
+            const long gc = d7_gate++;
+            float ah[8] = {0};
+            (*sycl_ctx->stream()).memcpy(ah, node->src[1]->data, 8 * sizeof(float)).wait();
+            printf("[FFN_DIAG] act c%ld:", gc);
+            for (int q = 0; q < 8; ++q) printf(" %.6g", ah[q]);
+            printf("\n");
+            fflush(stdout);
+        }
+        if (diag7 >= 7 && node->op == GGML_OP_MUL && node->src[0] &&
+            node->src[0]->op == GGML_OP_GLU && d7_mul <= 1) {
+            const long mc = d7_mul++;
+            float gh[8] = {0}, sg[4] = {0};
+            (*sycl_ctx->stream()).memcpy(gh, node->src[0]->data, 8 * sizeof(float)).wait();
+            (*sycl_ctx->stream()).memcpy(sg, node->src[1]->data, 4 * sizeof(float)).wait();
+            printf("[FFN_DIAG] nglu c%ld:", mc);
+            for (int q = 0; q < 8; ++q) printf(" %.6g", gh[q]);
+            printf(" | signs:");
+            for (int q = 0; q < 4; ++q) printf(" %.6g", sg[q]);
+            printf("\n");
+            fflush(stdout);
+        }
+
         if (node->op == GGML_OP_MUL_MAT) {
             const int ffn_skip = ggml_sycl_mul_mat_ffn_mmvq_fused(*sycl_ctx, cgraph, i);
             if (ffn_skip > 0) {
