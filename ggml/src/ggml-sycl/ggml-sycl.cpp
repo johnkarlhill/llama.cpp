@@ -5246,7 +5246,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                                stream);
             const int nrows = (int) wu->ne[1];
             const int cmp_rows = nrows < 2048 ? nrows : 2048;
-            ggml_sycl_pool_alloc<float> hglu(ctx.pool(), cmp_rows);
+            ggml_sycl_pool_alloc<float> hglu(ctx.pool(), 3 * cmp_rows);
             (void) stream->memcpy(hglu.get(), nglu->data, cmp_rows * sizeof(float));
             stream->wait();
             printf("[FFN_DIAG] v14dump:");
@@ -5302,15 +5302,14 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         if (ffn_diag13 == 3 && call_idx == 0) {
             const int nrows13 = (int) wg->ne[1];
             const int cmp13 = nrows13 < 2048 ? nrows13 : 2048;
-            ggml_sycl_pool_alloc<float> hg13(ctx.pool(), cmp13);
-            ggml_sycl_pool_alloc<float> hu13(ctx.pool(), cmp13);
+            ggml_sycl_pool_alloc<float> hg13(ctx.pool(), 2 * cmp13);
             (void) stream->memcpy(hg13.get(), ngate->data, cmp13 * sizeof(float));
-            (void) stream->memcpy(hu13.get(), nup->data, cmp13 * sizeof(float));
+            (void) stream->memcpy(hg13.get() + cmp13, nup->data, cmp13 * sizeof(float));
             stream->wait();
             printf("[FFN_DIAG] v13gdump:");
             for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13.get()[r]); }
             printf("\n[FFN_DIAG] v13udump:");
-            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hu13.get()[r]); }
+            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13.get()[cmp13 + r]); }
             printf("\n[FFN_DIAG] dumped %d v13 gate/up rows\n", cmp13);
             fflush(stdout);
             return 2;
