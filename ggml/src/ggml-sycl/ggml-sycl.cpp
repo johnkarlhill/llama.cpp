@@ -5257,12 +5257,12 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                                (int) ne00, (int) wu->ne[1],
                                                stream);
             const int nrows = (int) wu->ne[1];
-            const int cmp_rows = nrows < 16 ? nrows : 16;
-            ggml_sycl_pool_alloc<float> hglu(ctx.pool(), 3 * cmp_rows);
-            (void) stream->memcpy(hglu.get(), nglu->data, cmp_rows * sizeof(float));
+            const int cmp_rows = nrows < 2048 ? nrows : 2048;
+            static float hglu_host[2048];
+            (void) stream->memcpy(hglu_host, nglu->data, cmp_rows * sizeof(float));
             stream->wait();
             printf("[FFN_DIAG] v14dump:");
-            for (int r = 0; r < cmp_rows; ++r) { printf(" %.6g", hglu.get()[r]); }
+            for (int r = 0; r < cmp_rows; ++r) { printf(" %.6g", hglu_host[r]); }
             printf("\n[FFN_DIAG] dumped %d v14 rows\n", cmp_rows);
             fflush(stdout);
             return 3;
@@ -5314,14 +5314,14 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         if (ffn_diag13 == 3 && call_idx == 0) {
             const int nrows13 = (int) wg->ne[1];
             const int cmp13 = nrows13 < 2048 ? nrows13 : 2048;
-            ggml_sycl_pool_alloc<float> hg13(ctx.pool(), 2 * cmp13);
-            (void) stream->memcpy(hg13.get(), ngate->data, cmp13 * sizeof(float));
-            (void) stream->memcpy(hg13.get() + cmp13, nup->data, cmp13 * sizeof(float));
+            static float hg13_host[2 * 2048];
+            (void) stream->memcpy(hg13_host, ngate->data, cmp13 * sizeof(float));
+            (void) stream->memcpy(hg13_host + cmp13, nup->data, cmp13 * sizeof(float));
             stream->wait();
             printf("[FFN_DIAG] v13gdump:");
-            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13.get()[r]); }
+            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13_host[r]); }
             printf("\n[FFN_DIAG] v13udump:");
-            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13.get()[cmp13 + r]); }
+            for (int r = 0; r < cmp13; ++r) { printf(" %.6g", hg13_host[cmp13 + r]); }
             printf("\n[FFN_DIAG] dumped %d v13 gate/up rows\n", cmp13);
             fflush(stdout);
             return 2;
