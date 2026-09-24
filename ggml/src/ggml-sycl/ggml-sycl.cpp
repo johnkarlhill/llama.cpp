@@ -5154,6 +5154,8 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
 // adjacent as siblings (gate first per llama-graph node order). Fuse into one
 // quantize + one v13 launch; the GLU itself runs as a separate kernel on the fused
 // outputs. Returns the number of extra nodes consumed, or 0 when the pattern fails.
+static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct ggml_tensor * dst);
+static bool ggml_sycl_is_view_or_noop(const ggml_tensor * t);
 static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     // Opt-IN gate: experimental batched gate+up. Off by default.
     // =1: batched gate+up (v13), GLU runs as its own node.
