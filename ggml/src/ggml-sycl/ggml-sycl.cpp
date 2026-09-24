@@ -5233,10 +5233,28 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                           src1_padded_cols, stream);
 
     if (fused_glu) {
+        static bool ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e && e[0] == '1'; }();
+        if (ffn_diag) {
+            // one-time: pointer aliasing map + first outputs
+            printf("[FFN_DIAG] wg=%p wu=%p ngate=%p nup=%p nglu=%p act=%p q8=%p ne00=%lld ng=%lld nu=%lld\n",
+                   wg->data, wu->data, (void *) ngate->data, (void *) nup->data,
+                   (void *) nglu->data, (void *) act->data, (void *) src1_ddq,
+                   (long long) ne00, (long long) wg->ne[1], (long long) wu->ne[1]);
+            fflush(stdout);
+        }
         mul_mat_vec_pq2_0_batched_sycl_v14(wg->data, wu->data, src1_ddq,
                                            (float *) nglu->data,
                                            (int) ne00, (int) wu->ne[1],
                                            stream);
+        if (ffn_diag) {
+            // wait, then dump first 4 GLU outputs to host
+            float host[4] = {0, 0, 0, 0};
+            (void) stream->memcpy(host, nglu->data, 4 * sizeof(float));
+            stream->wait();
+            printf("[FFN_DIAG] nglu[0..3] = %g %g %g %g\n", host[0], host[1], host[2], host[3]);
+            fflush(stdout);
+            ffn_diag = false;  // print once (non-const local)
+        }
         return 3;
     }
 
