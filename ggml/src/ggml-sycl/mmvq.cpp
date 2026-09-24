@@ -1949,6 +1949,78 @@ static void mul_mat_vec_pq2_0_batched_sycl_v12(const void * vq, const void * vk,
     });
 }
 
+// v13: batched FFN gate+up — one launch covers two PQ2_0 weight tensors sharing one
+// q8_1 activation. Rows [0,ng) read wg; rows [ng,ng+nu) read wu. Saves 1 kernel launch
+// + 1 activation-quantize round trip per FFN layer per token. Same v9 inner body.
+static __dpct_inline__ void mul_mat_vec_pq2_0_v13(
+        const void * __restrict__ vg, const void * __restrict__ vu,
+        const void * __restrict__ vy,
+        float * __restrict__ dg, float * __restrict__ du,
+        const int ncols, const int ng, const int nu,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane = item_ct1.get_local_id(2);
+    const int row  = item_ct1.get_group(2) * item_ct1.get_local_range(1)
+                   + item_ct1.get_local_id(1);
+    const int nrows_total = ng + nu;
+    if (row >= nrows_total) return;
+
+    const void * w = row < ng ? vg : vu;
+    const int local_row = row < ng ? row : row - ng;
+
+    const block_pq2_0  * x = (const block_pq2_0 *)  w;
+    const block_q8_1 * y = (const block_q8_1 *) vy;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;
+    float tmp = 0.0f;
+
+    const int group_stride = WARP_SIZE * 4;
+    const int padded = (blocks_per_row + group_stride - 1) / group_stride * group_stride;
+    for (int i0 = 0; i0 < padded; i0 += group_stride) {
+        #pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const int b    = i0 + lane * 4 + k;
+            const bool ok  = b < blocks_per_row;
+            const int ibx  = local_row * blocks_per_row + (ok ? b : 0);
+            const int iby0 = (ok ? b : 0) * (QK_PQ2_0 / QK8_1);
+            float dv = 0.0f;
+            #pragma unroll
+            for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+                dv += ok ? vec_dot_pq2_0_q8_1_swar(&x[ibx], &y[iby0], c) : 0.0f;
+            }
+            tmp += dv;
+        }
+    }
+
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        float * d = row < ng ? dg : du;
+        d[local_row] = tmp;
+    }
+}
+
+static void mul_mat_vec_pq2_0_batched_sycl_v13(const void * vg, const void * vu,
+                                        const void * vy, float * dg, float * du,
+                                        const int ncols, const int ng, const int nu,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const int nrows_total = ng + nu;
+    const sycl::range<3> block_nums(1, 1, nrows_total);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v13(vg, vu, vy, dg, du, ncols, ng, nu, item_ct1);
+            });
+    });
+}
+
 // v10: v9 + FUSED quantize. Takes src1 as F32; each lane quantizes its chunk of the
 // activation row in registers (same math as quantize_q8_1: amax -> d = amax/127 ->
 // int8 round), so no separate quantize kernel runs between matvecs. 4 k-blocks per

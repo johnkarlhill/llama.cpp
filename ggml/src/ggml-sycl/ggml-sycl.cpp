@@ -5150,6 +5150,81 @@ static int ggml_sycl_mul_mat_qkv_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     return last - node_idx;
 }
 
+// Scan-based FFN gate+up batching: the two GLU inputs share one activation but sit
+// adjacent as siblings (gate first per llama-graph node order). Fuse into one
+// quantize + one v13 launch; the GLU itself runs as a separate kernel on the fused
+// outputs. Returns the number of extra nodes consumed, or 0 when the pattern fails.
+static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
+    // Opt-IN gate: experimental batched gate+up. Off by default.
+    static const bool no_ffn_fuse = []() {
+        const char * env = getenv("GGML_SYCL_FFN_FUSE");
+        return !(env && env[0] == '1');
+    }();
+    if (no_ffn_fuse) {
+        return 0;
+    }
+    if (g_ggml_sycl_prioritize_dmmv) {
+        return 0;
+    }
+
+    ggml_tensor * ngate = cgraph->nodes[node_idx];
+    if (ngate->type != GGML_TYPE_F32 || ngate->src[1]->type != GGML_TYPE_F32) {
+        return 0;
+    }
+    const ggml_tensor * wg = ngate->src[0];
+    const ggml_tensor * act = ngate->src[1];
+    if (wg->type != GGML_TYPE_PQ2_0 || act->ne[1] != 1 || act->ne[2] != 1 ||
+        act->ne[3] != 1 || wg->ne[2] != 1 || wg->ne[3] != 1) {
+        return 0;
+    }
+    if (!ggml_is_contiguous(wg) || !ggml_is_contiguous(act) || !ggml_is_contiguous(ngate) ||
+        wg->ne[0] % 128 != 0) {
+        return 0;
+    }
+
+    // the GLU consumer must directly follow: gate-matmul, up-matmul, GLU
+    if (node_idx + 2 >= cgraph->n_nodes) {
+        return 0;
+    }
+    ggml_tensor * nup   = cgraph->nodes[node_idx + 1];
+    ggml_tensor * nglu  = cgraph->nodes[node_idx + 2];
+    if (nup->op != GGML_OP_MUL_MAT || nup->type != GGML_TYPE_F32 || nup->src[1] != act) {
+        return 0;
+    }
+    if (nglu->op != GGML_OP_GLU || nglu->src[0] != ngate || nglu->src[1] != nup) {
+        return 0;
+    }
+    const ggml_tensor * wu = nup->src[0];
+    if (wu->type != GGML_TYPE_PQ2_0 || wu->ne[0] != wg->ne[0] || !ggml_is_contiguous(wu) ||
+        !ggml_is_contiguous(nup)) {
+        return 0;
+    }
+
+    // this writes the outputs directly rather than the per-device row slices that
+    // ggml_sycl_op_mul_mat() stitches back together, so it cannot serve split weights
+    if (ggml_backend_buffer_is_sycl_split(wg->buffer) || ggml_backend_buffer_is_sycl_split(wu->buffer)) {
+        return 0;
+    }
+
+    scope_op_debug_print scope_dbg_print(__func__, ngate, /*num_src=*/2, " : fused with up projection");
+
+    const int64_t ne00 = wg->ne[0];
+    const queue_ptr stream = ctx.stream();
+    const int src1_padded_cols = GGML_PAD((int) ne00, MATRIX_ROW_PADDING);
+
+    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
+                                             (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1);
+    char * src1_ddq = src1_q8_alloc.get();
+    quantize_row_q8_1_sycl<quantize_q8_1>((const float *) act->data, src1_ddq, (int) ne00, 1,
+                                          src1_padded_cols, stream);
+
+    mul_mat_vec_pq2_0_batched_sycl_v13(wg->data, wu->data, src1_ddq,
+                                       (float *) ngate->data, (float *) nup->data,
+                                       (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
+                                       stream);
+    return 2;
+}
+
 static int ggml_sycl_l2_norm_batch_fused(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int node_idx) {
     const ggml_tensor * node = cgraph->nodes[node_idx];
     // NOTE: no device_count check here — this box enumerates 2 SYCL devices (B70+B50),
@@ -6325,6 +6400,14 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             ggml_sycl_ssm_conv_fused(*sycl_ctx, node, nullptr, cgraph->nodes[i + 1]);
             i++;
             continue;
+        }
+
+        if (node->op == GGML_OP_MUL_MAT) {
+            const int ffn_skip = ggml_sycl_mul_mat_ffn_mmvq_fused(*sycl_ctx, cgraph, i);
+            if (ffn_skip > 0) {
+                i += ffn_skip;
+                continue;
+            }
         }
 
         if (node->op == GGML_OP_MUL_MAT && ggml_sycl_mul_mat_glu_mmvq_fused(*sycl_ctx, cgraph, i)) {

@@ -88,4 +88,13 @@ void mul_mat_vec_pq2_0_batched_sycl_v12(
     int ncols, int nq, int nk, int nv,
     dpct::queue_ptr stream);
 
+// Batched FFN gate+up GEMV: two PQ2_0 weight tensors, one shared q8_1 activation,
+// one kernel launch. Row blocks [0,ng)/[ng,ng+nu) read wg/wu and write dg/du.
+// Standard (non-reorder) block layout, v9 inner body.
+void mul_mat_vec_pq2_0_batched_sycl_v13(
+    const void * vg, const void * vu,
+    const void * vy, float * dg, float * du,
+    int ncols, int ng, int nu,
+    dpct::queue_ptr stream);
+
 #endif // GGML_SYCL_MMVQ_HPP
