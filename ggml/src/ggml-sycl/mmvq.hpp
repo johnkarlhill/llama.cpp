@@ -121,4 +121,8 @@ void mul_mat_vec_pq2_0_batched_sycl_v14w(
     int ncols, int nglu,
     dpct::queue_ptr stream);
 
+// Standalone epilogue: silu(g)*u for f32 gate/up arrays (diag/bisect aid).
+void ffn_glu_epilogue_sycl(const float * dgate, const float * dup, float * dglu,
+                           int n, int stride, dpct::queue_ptr stream);
+
 #endif // GGML_SYCL_MMVQ_HPP

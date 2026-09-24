@@ -2096,6 +2096,28 @@ static void mul_mat_vec_pq2_0_batched_sycl_v14(const void * vg, const void * vu,
     });
 }
 
+// ffn epi: standalone epilogue — reads f32 gate/up outputs, writes silu(g)*u.
+static __dpct_inline__ void ffn_glu_epilogue(const float * dgate, const float * dup,
+                                             float * dglu, const int n, const int stride,
+                                             const sycl::nd_item<3> & item_ct1) {
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i < n) {
+        const float g = dgate[i * stride];
+        const float u = dup[i * stride];
+        dglu[i * stride] = g / (1.0f + sycl::native::exp(-g)) * u;
+    }
+}
+
+void ffn_glu_epilogue_sycl(const float * dgate, const float * dup, float * dglu,
+                           const int n, const int stride, dpct::queue_ptr stream) {
+    const int nblock = (n + 255) / 256;
+    stream->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, nblock),
+                                           sycl::range<3>(1, 1, 256)),
+                         [=](sycl::nd_item<3> item_ct1) {
+                             ffn_glu_epilogue(dgate, dup, dglu, n, stride, item_ct1);
+                         });
+}
+
 // v14w: v14 + also writes the raw gate/up results (matches v13's buffer side
 // effects) — bisects whether the corruption comes from leaving ngate/nup
 // unwritten in the fused path.
