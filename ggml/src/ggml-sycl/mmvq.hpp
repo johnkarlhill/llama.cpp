@@ -97,4 +97,13 @@ void mul_mat_vec_pq2_0_batched_sycl_v13(
     int ncols, int ng, int nu,
     dpct::queue_ptr stream);
 
+// Batched FFN gate+up GEMV with fused swiglu epilogue: one warp computes the gate and
+// up rows for the same output index and writes silu(g)*u. Gate/up ne[1] must match.
+// Standard (non-reorder) block layout, v9 inner body.
+void mul_mat_vec_pq2_0_batched_sycl_v14(
+    const void * vg, const void * vu,
+    const void * vy, float * dglu,
+    int ncols, int nglu,
+    dpct::queue_ptr stream);
+
 #endif // GGML_SYCL_MMVQ_HPP

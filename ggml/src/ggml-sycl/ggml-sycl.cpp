@@ -5200,13 +5200,24 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         return 0;
     }
 
+    const bool fused_glu = ggml_get_glu_op(nglu) == GGML_GLU_OP_SWIGLU &&
+                           ggml_are_same_shape(ngate, nup) && ggml_are_same_shape(ngate, nglu) &&
+                           ggml_is_contiguous(nglu) && nglu->type == GGML_TYPE_F32 &&
+                           // single-use + not-graph-output safety for writing the GLU
+                           // output while the intermediates stay unmaterialised
+                           ggml_can_fuse_subgraph(cgraph, node_idx,
+                                                  { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU },
+                                                  { node_idx + 2 });
+
     // this writes the outputs directly rather than the per-device row slices that
     // ggml_sycl_op_mul_mat() stitches back together, so it cannot serve split weights
     if (ggml_backend_buffer_is_sycl_split(wg->buffer) || ggml_backend_buffer_is_sycl_split(wu->buffer)) {
         return 0;
     }
 
-    scope_op_debug_print scope_dbg_print(__func__, ngate, /*num_src=*/2, " : fused with up projection");
+    scope_op_debug_print scope_dbg_print(__func__, ngate, /*num_src=*/2,
+                                         fused_glu ? " : fused with up projection + GLU"
+                                                   : " : fused with up projection");
 
     const int64_t ne00 = wg->ne[0];
     const queue_ptr stream = ctx.stream();
@@ -5217,6 +5228,14 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     char * src1_ddq = src1_q8_alloc.get();
     quantize_row_q8_1_sycl<quantize_q8_1>((const float *) act->data, src1_ddq, (int) ne00, 1,
                                           src1_padded_cols, stream);
+
+    if (fused_glu) {
+        mul_mat_vec_pq2_0_batched_sycl_v14(wg->data, wu->data, src1_ddq,
+                                           (float *) nglu->data,
+                                           (int) ne00, (int) wu->ne[1],
+                                           stream);
+        return 3;
+    }
 
     mul_mat_vec_pq2_0_batched_sycl_v13(wg->data, wu->data, src1_ddq,
                                        (float *) ngate->data, (float *) nup->data,
