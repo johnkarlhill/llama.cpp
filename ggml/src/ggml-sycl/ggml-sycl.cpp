@@ -6604,7 +6604,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         static const int diag7 = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
         static long d7_gate = 0, d7_mul = 0;
         if (diag7 >= 7 && node->op == GGML_OP_MUL_MAT && node->name &&
-            strncmp(node->name, "ffn_gate", 8) == 0 && d7_gate <= 1) {
+            strncmp(node->name, "ffn_gate", 8) == 0 && d7_gate <= 99) {
             const long gc = d7_gate++;
             float ah[8] = {0};
             (*sycl_ctx->stream()).memcpy(ah, node->src[1]->data, 8 * sizeof(float)).wait();
@@ -6614,7 +6614,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             fflush(stdout);
         }
         if (diag7 >= 7 && node->op == GGML_OP_MUL && node->src[0] &&
-            node->src[0]->op == GGML_OP_GLU && d7_mul <= 1) {
+            node->src[0]->op == GGML_OP_GLU && d7_mul <= 99) {
             const long mc = d7_mul++;
             float gh[8] = {0}, sg[4] = {0};
             (*sycl_ctx->stream()).memcpy(gh, node->src[0]->data, 8 * sizeof(float)).wait();
