@@ -5245,7 +5245,7 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
                                                (int) ne00, (int) wu->ne[1],
                                                stream);
             const int nrows = (int) wu->ne[1];
-            const int cmp_rows = nrows < 2048 ? nrows : 2048;
+            const int cmp_rows = nrows < 16 ? nrows : 16;
             ggml_sycl_pool_alloc<float> hglu(ctx.pool(), 3 * cmp_rows);
             (void) stream->memcpy(hglu.get(), nglu->data, cmp_rows * sizeof(float));
             stream->wait();
