@@ -5246,6 +5246,8 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         static int ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
         static long ffn_calls = 0;
         const long call_idx = ffn_calls++;
+        printf("[FFN_DIAG] fused branch, call=%ld diag=%d\n", call_idx, ffn_diag);
+        fflush(stdout);
         if (ffn_diag >= 3 && call_idx <= 1) {
             // dump first 2048 rows of nglu (or gate/up when not fused) to files for
             // offline cross-run comparison — no in-graph v13 launch (its ngate/nup
