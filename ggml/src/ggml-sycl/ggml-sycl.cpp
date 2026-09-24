@@ -5236,37 +5236,22 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
         static int ffn_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
         static long ffn_calls = 0;
         const long call_idx = ffn_calls++;
-        if (ffn_diag == 3 && call_idx == 0) {
-            // full-output compare: v13 into gate/up, v14 into nglu, host-compare all rows
-            mul_mat_vec_pq2_0_batched_sycl_v13(wg->data, wu->data, src1_ddq,
-                                               (float *) ngate->data, (float *) nup->data,
-                                               (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
-                                               stream);
+        if (ffn_diag >= 3 && call_idx == 0) {
+            // dump first 2048 rows of nglu (or gate/up when not fused) to files for
+            // offline cross-run comparison — no in-graph v13 launch (its ngate/nup
+            // buffers may be recycled by the scheduler once the nodes are skipped)
             mul_mat_vec_pq2_0_batched_sycl_v14(wg->data, wu->data, src1_ddq,
                                                (float *) nglu->data,
                                                (int) ne00, (int) wu->ne[1],
                                                stream);
             const int nrows = (int) wu->ne[1];
             const int cmp_rows = nrows < 2048 ? nrows : 2048;
-            ggml_sycl_pool_alloc<float> hg(ctx.pool(), cmp_rows);
-            ggml_sycl_pool_alloc<float> hu(ctx.pool(), cmp_rows);
             ggml_sycl_pool_alloc<float> hglu(ctx.pool(), cmp_rows);
-            (void) stream->memcpy(hg.get(), ngate->data, cmp_rows * sizeof(float));
-            (void) stream->memcpy(hu.get(), nup->data, cmp_rows * sizeof(float));
             (void) stream->memcpy(hglu.get(), nglu->data, cmp_rows * sizeof(float));
             stream->wait();
-            double maxdiff = 0.0; int first_bad = -1; float g0 = 0, u0 = 0, g14 = 0;
-            for (int r = 0; r < cmp_rows; ++r) {
-                const float expect = (hg.get()[r] / (1.0f + expf(-hg.get()[r]))) * hu.get()[r];
-                const float got = hglu.get()[r];
-                const float diff = fabsf(expect - got);
-                if (diff > maxdiff) { maxdiff = diff; }
-                if (diff > 1e-3f && first_bad < 0) {
-                    first_bad = r; g0 = hg.get()[r]; u0 = hu.get()[r]; g14 = got;
-                }
-            }
-            printf("[FFN_DIAG] FULL call=0 cmp_rows=%d/%d maxdiff=%g first_bad=%d (g=%g u=%g glu=%g)\n",
-                   cmp_rows, nrows, maxdiff, first_bad, g0, u0, g14);
+            FILE * df = fopen("C:/llama.cpp-build-sycl/ffn_v14_dump.bin", "wb");
+            if (df) { fwrite(hglu.get(), sizeof(float), cmp_rows, df); fclose(df); }
+            printf("[FFN_DIAG] dumped %d v14 rows\n", cmp_rows);
             fflush(stdout);
             return 3;
         }
@@ -5307,13 +5292,27 @@ static int ggml_sycl_mul_mat_ffn_mmvq_fused(ggml_backend_sycl_context & ctx, ggm
     }
 
     {
-        static bool ffn_diag13 = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e && e[0] == '1'; }();
+        static int ffn_diag13 = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
         static long ffn_calls13 = 0;
         const long call_idx = ffn_calls13++;
         mul_mat_vec_pq2_0_batched_sycl_v13(wg->data, wu->data, src1_ddq,
                                            (float *) ngate->data, (float *) nup->data,
                                            (int) ne00, (int) wg->ne[1], (int) wu->ne[1],
                                            stream);
+        if (ffn_diag13 == 3 && call_idx == 0) {
+            const int nrows13 = (int) wg->ne[1];
+            const int cmp13 = nrows13 < 2048 ? nrows13 : 2048;
+            ggml_sycl_pool_alloc<float> hg13(ctx.pool(), cmp13);
+            ggml_sycl_pool_alloc<float> hu13(ctx.pool(), cmp13);
+            (void) stream->memcpy(hg13.get(), ngate->data, cmp13 * sizeof(float));
+            (void) stream->memcpy(hu13.get(), nup->data, cmp13 * sizeof(float));
+            stream->wait();
+            FILE * df = fopen("C:/llama.cpp-build-sycl/ffn_v13_dump.bin", "wb");
+            if (df) { fwrite(hg13.get(), sizeof(float), cmp13, df); fwrite(hu13.get(), sizeof(float), cmp13, df); fclose(df); }
+            printf("[FFN_DIAG] dumped %d v13 gate/up rows\n", cmp13);
+            fflush(stdout);
+            return 2;
+        }
         if (ffn_diag13 && (call_idx == 0 || call_idx == 1 || call_idx == 2 || call_idx == 512)) {
             const int probe_rows13[6] = {0, 1, 100, 1000, 5000, 17307};
             float hg13[6] = {0};
