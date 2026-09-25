@@ -1952,6 +1952,89 @@ static void mul_mat_vec_pq2_0_q8_1_sycl_v15(const void * vx, const void * vy,
     });
 }
 
+// v17: R3 short-K specialized kernel (blocks_per_row == 40, i.e. K = 5120).
+// Two fully independent load phases (prefetch) before compute; all 32 lanes
+// carry weight bytes in flight; single accumulator per row (no row pairing,
+// no parallel accumulators). Software pipeline: chunk B loads issued first
+// (they would otherwise serialize behind chunk A compute), then chunk A
+// loads, then compute A then B.
+static __dpct_inline__ void mul_mat_vec_pq2_0_v17(
+        const void * __restrict__ vx, const void * __restrict__ vy,
+        float * __restrict__ dst, const int ncols, const int nrows,
+        const sycl::nd_item<3> & item_ct1) {
+
+    const int lane  = item_ct1.get_local_id(2);
+    const int warp  = item_ct1.get_local_id(1);
+    const int row   = item_ct1.get_group(2) * item_ct1.get_local_range(1) + warp;
+
+    if (row >= nrows) return;
+
+    const block_pq2_0  * x = (const block_pq2_0 *)  vx;
+    const block_q8_1   * y = (const block_q8_1 *) vy;
+
+    const int blocks_per_row = ncols / QK_PQ2_0;   // 40 for K=5120
+    const int bA = lane;                            // chunk A block (lanes 0..31)
+    const int bB = lane + WARP_SIZE;                // chunk B block (lanes 0..7)
+    const bool okA = bA < blocks_per_row;
+    const bool okB = bB < blocks_per_row;
+
+    const int ibxA = row * blocks_per_row + (okA ? bA : 0);
+    const int ibxB = row * blocks_per_row + (okB ? bB : 0);
+    const int ibyA = (okA ? bA : 0) * (QK_PQ2_0 / QK8_1);
+    const int ibyB = (okB ? bB : 0) * (QK_PQ2_0 / QK8_1);
+
+    // prefetch phase: both loads independent, issued back-to-back
+    const block_pq2_0 * pxB = &x[ibxB];
+    const block_q8_1  * pyB = &y[ibyB];
+    const block_pq2_0 * pxA = &x[ibxA];
+    const block_q8_1  * pyA = &y[ibyA];
+
+    float tmp = 0.0f;
+
+    // compute chunk B first (its loads were issued earliest)
+    if (okB) {
+        #pragma unroll
+        for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+            tmp += vec_dot_pq2_0_q8_1_swar(pxB, pyB, c);
+        }
+    }
+    // compute chunk A
+    if (okA) {
+        #pragma unroll
+        for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
+            tmp += vec_dot_pq2_0_q8_1_swar(pxA, pyA, c);
+        }
+    }
+
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (lane == 0) {
+        dst[row] = tmp;
+    }
+}
+
+// v17 launcher: 1 row/warp, same shape as v9
+static void mul_mat_vec_pq2_0_q8_1_sycl_v17(const void * vx, const void * vy,
+                                        float * dst, const int ncols,
+                                        const int nrows,
+                                        dpct::queue_ptr stream) {
+    GGML_ASSERT(ncols % QK_PQ2_0 == 0);
+    const sycl::range<3> block_nums(1, 1, nrows);
+    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+
+    stream->submit([&](sycl::handler & cgh) {
+        cgh.parallel_for(
+            sycl::nd_range<3>(block_nums * block_dims, block_dims),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                mul_mat_vec_pq2_0_v17(
+                    vx, vy, dst, ncols, nrows, item_ct1);
+            });
+    });
+}
+
 // v10: v9 + FUSED quantize. Takes src1 as F32; each lane quantizes its chunk of the
 
 
@@ -4726,6 +4809,8 @@ extern "C" __declspec(dllexport) void ggml_debug_pq2_0_run(const void * vx, cons
         mul_mat_vec_pq2_0_q8_1_sycl_v9(vx, vy, dst, ncols, nrows, stream);
     } else if (which == 10) {
         mul_mat_vec_pq2_0_q8_1_sycl_v10(vx, (const float *) vy, dst, ncols, nrows, stream);
+    } else if (which == 13) {
+        mul_mat_vec_pq2_0_q8_1_sycl_v17(vx, vy, dst, ncols, nrows, stream);
     } else if (which == 11) {
         // 2-col test: y holds two back-to-back cols, dst two back-to-back col buffers
         mul_mat_vec_pq2_0_q8_1_sycl_ncols<2>(vx, vy, dst, ncols, nrows,
