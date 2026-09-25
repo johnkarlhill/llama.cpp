@@ -6808,6 +6808,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                 acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - t_host).count();
             }
+            if (byte_census_on) {
+                const ggml_tensor * gn0 = cgraph->nodes[i];
+                int64_t wb = gn0->src[0] ? ggml_nbytes(gn0->src[0]) : 0;
+                auto & acc = byte_accum["GLU_FUSED"];
+                acc[0]++; acc[1] += wb; acc[2] += ggml_nbytes(gn0);
+            }
             i += 2;
             continue;
         }
@@ -6820,6 +6826,16 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                     acc.first++;
                     acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - t_host).count();
+                }
+                if (byte_census_on) {
+                    int64_t wb = 0, nb = 0;
+                    for (int q = 0; q < qkv_skip; ++q) {
+                        const ggml_tensor * qn = cgraph->nodes[i + q];
+                        if (qn->op == GGML_OP_MUL_MAT && qn->src[0]) wb += ggml_nbytes(qn->src[0]);
+                        nb += ggml_nbytes(qn);
+                    }
+                    auto & acc = byte_accum["QKV_FUSED"];
+                    acc[0]++; acc[1] += wb; acc[2] += nb;
                 }
                 i += qkv_skip;
                 continue;
@@ -6851,6 +6867,20 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+        if (byte_census_on) {
+            int64_t wb = 0, nb = 0;
+            if (node->op == GGML_OP_MUL_MAT) {
+                wb = node->src[0] ? ggml_nbytes(node->src[0]) : 0;
+                nb = (node->src[1] ? ggml_nbytes(node->src[1]) : 0) + ggml_nbytes(node);
+            } else {
+                for (int q = 0; q < GGML_MAX_SRC; ++q) {
+                    if (node->src[q]) nb += ggml_nbytes(node->src[q]);
+                }
+                nb += ggml_nbytes(node);
+            }
+            auto & acc = byte_accum[ggml_op_name(node->op)];
+            acc[0]++; acc[1] += wb; acc[2] += nb;
+        }
         if (host_timer_on) {
             auto & acc = host_accum[std::string(ggml_op_name(node->op))];
             acc.first++;
