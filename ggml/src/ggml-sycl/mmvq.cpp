@@ -3937,8 +3937,17 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                         mul_mat_vec_pq2_0_q8_1_sycl_v11(src0_dd_i, src1_ddf_i_bs, dst_dd_i_bs,
                             ne00, row_diff, stream);
                     } else {
-                        mul_mat_vec_pq2_0_q8_1_sycl_v9(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
-                            ne00, row_diff, stream);
+                        // v15: 2-row batching for short-K (blocks/row < 256);
+                        // env opt-in for A/B against v9
+                        static const bool pq2_v15 = getenv("GGML_SYCL_PQ2_V15") != nullptr
+                            && getenv("GGML_SYCL_PQ2_V15")[0] == '1';
+                        if (pq2_v15 && ne00 / QK_PQ2_0 < 256) {
+                            mul_mat_vec_pq2_0_q8_1_sycl_v15(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
+                                ne00, row_diff, stream);
+                        } else {
+                            mul_mat_vec_pq2_0_q8_1_sycl_v9(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs,
+                                ne00, row_diff, stream);
+                        }
                     }
                 }
                 {
