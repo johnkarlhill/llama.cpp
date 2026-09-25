@@ -809,6 +809,7 @@ namespace dpct
         _queues.push_back(sycl::queue(
             *this, eh,
             sycl::property_list(
+#define DPCT_PROFILING_ENABLED 1
 #ifdef DPCT_PROFILING_ENABLED
                 sycl::property::queue::enable_profiling(),
 #endif

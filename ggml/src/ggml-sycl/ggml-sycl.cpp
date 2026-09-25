@@ -4851,6 +4851,16 @@ static bool can_use_mul_mat_vec_q(const ggml_tensor * src0, const ggml_tensor * 
            src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
 }
 
+// GGML_SYCL_MATVEC_PROFILE: per-mul_mat device durations via marker-kernel
+// event profiling (no host syncs). Resolved at graph end; CSV dump to
+// GGML_SYCL_MATVEC_PROFILE_DUMP: ne00,ne01,ne10,type,dur_us.
+static std::vector<sycl::event> mv_pending;
+static std::vector<std::array<int,4>> mv_shapes;
+struct mv_rec { unsigned long long t0, t1; int ne00, ne01, ne10, type; };
+static std::vector<mv_rec> mv_recs;
+static void mv_profile_resolve();
+static bool mv_prof_on() { return getenv("GGML_SYCL_MATVEC_PROFILE") != nullptr; }
+
 static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
 
@@ -4888,6 +4898,12 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
 
     // check data types and tensor shapes for custom matrix multiplication kernels:
     bool use_dequantize_mul_mat_vec = can_use_dequantize_mul_mat_vec(src0, src1, dst);
+
+    if (mv_prof_on()) {
+        queue_ptr q = sycl_ctx->stream();
+        mv_pending.push_back(q->single_task([]() {}));  // ends when prior work done
+        mv_shapes.push_back({(int)src0->ne[0], (int)src0->ne[1], (int)src1->ne[1], (int)src0->type});
+    }
 
     bool use_mul_mat_vec_q = can_use_mul_mat_vec_q(src0, src1, dst);
 
@@ -4952,6 +4968,39 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
     } else {
         ggml_sycl_op_mul_mat<no_quantize_q8_1>(ctx, src0, src1, dst, ggml_sycl_op_mul_mat_sycl);
     }
+
+    if (mv_prof_on()) {
+        queue_ptr q = sycl_ctx->stream();
+        mv_pending.push_back(q->single_task([]() {}));  // starts when matvec done
+    }
+}
+
+static void mv_profile_resolve() {
+    if (mv_pending.empty()) return;
+    mv_recs.reserve(mv_pending.size() / 2);
+    for (size_t k = 0; k + 1 < mv_pending.size(); k += 2) {
+        try {
+            const auto a = mv_pending[k].get_profiling_info<sycl::info::event_profiling::command_end>();
+            const auto b = mv_pending[k+1].get_profiling_info<sycl::info::event_profiling::command_start>();
+            const auto & sh = mv_shapes[k/2];
+            mv_recs.push_back({(unsigned long long)a, (unsigned long long)b, sh[0], sh[1], sh[2], sh[3]});
+        } catch (...) {}
+    }
+    mv_pending.clear();
+    mv_shapes.clear();
+    if (mv_recs.empty()) return;
+    const char * dump = getenv("GGML_SYCL_MATVEC_PROFILE_DUMP");
+    if (dump) {
+        FILE * f = fopen(dump, "w");
+        if (f) {
+            fprintf(f, "ne00,ne01,ne10,type,dur_us\n");
+            for (const auto & r : mv_recs) {
+                fprintf(f, "%d,%d,%d,%d,%.2f\n", r.ne00, r.ne01, r.ne10, r.type, (r.t1 - r.t0) / 1000.0);
+            }
+            fclose(f);
+        }
+    }
+    mv_recs.clear();
 }
 
 // Fused dense-FFN mat-vec for the {mul_mat(gate), mul_mat(up), GLU} subgraph at node_idx.
@@ -6810,6 +6859,10 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                 f << kv.first << "," << kv.second.first << "," << kv.second.second << "\n";
             }
         }
+    }
+
+    if (mv_prof_on()) {
+        mv_profile_resolve();
     }
 
     if (host_timer_on && host_timer_dump) {
