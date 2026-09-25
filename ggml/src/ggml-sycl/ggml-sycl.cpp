@@ -4900,7 +4900,7 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
     bool use_dequantize_mul_mat_vec = can_use_dequantize_mul_mat_vec(src0, src1, dst);
 
     if (mv_prof_on()) {
-        queue_ptr q = sycl_ctx->stream();
+        queue_ptr q = ctx.stream();
         mv_pending.push_back(q->single_task([]() {}));  // ends when prior work done
         mv_shapes.push_back({(int)src0->ne[0], (int)src0->ne[1], (int)src1->ne[1], (int)src0->type});
     }
@@ -4970,7 +4970,7 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
     }
 
     if (mv_prof_on()) {
-        queue_ptr q = sycl_ctx->stream();
+        queue_ptr q = ctx.stream();
         mv_pending.push_back(q->single_task([]() {}));  // starts when matvec done
     }
 }
