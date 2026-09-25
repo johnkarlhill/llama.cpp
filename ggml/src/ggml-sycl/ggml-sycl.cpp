@@ -6610,6 +6610,14 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
     static std::map<std::string, std::pair<int64_t, int64_t>> host_accum;  // key -> {count, total_ns}
     std::chrono::steady_clock::time_point t_host;
 
+    // GGML_SYCL_BYTE_CENSUS=1: host-side static byte census per op - weights
+    // read (src0 nbytes for MUL_MAT), activations+dst (src/dst nbytes).
+    // P5 non-weight traffic: total bytes - weight bytes = KV+act+dst per graph.
+    static const bool   byte_census_on   = getenv("GGML_SYCL_BYTE_CENSUS") != nullptr;
+    static const char * byte_census_dump = getenv("GGML_SYCL_BYTE_CENSUS_DUMP");
+    // op -> {calls, weight_bytes, nonweight_bytes}
+    static std::map<std::string, std::array<int64_t,3>> byte_accum;
+
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         if (ggml_sycl_is_view_or_noop(node)) {
