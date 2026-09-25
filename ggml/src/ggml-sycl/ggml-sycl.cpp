@@ -4877,7 +4877,7 @@ static void bk_profile_resolve() {
         try {
             const auto a = bk_pending[k].get_profiling_info<sycl::info::event_profiling::command_end>();
             const auto b = bk_pending[k+1].get_profiling_info<sycl::info::event_profiling::command_start>();
-            bk_recs.push_back({(unsigned long long)a, (unsigned long long)b, bk_classes[k/2]});
+            bk_recs.push_back({(unsigned long long)a, (unsigned long long)b, bk_classes[k]});
         } catch (...) {}
     }
     bk_pending.clear();
