@@ -4861,6 +4861,54 @@ static std::vector<mv_rec> mv_recs;
 static void mv_profile_resolve();
 static bool mv_prof_on() { return getenv("GGML_SYCL_MATVEC_PROFILE") != nullptr; }
 
+// GGML_SYCL_BUCKET_PROFILE: per-op-class device durations via marker-kernel
+// event pairs around each node dispatch (no host syncs; marker overhead
+// measured separately via e2e A/B). Resolved at graph end; CSV dump to
+// GGML_SYCL_BUCKET_PROFILE_DUMP: opclass, calls, total_us.
+static std::vector<sycl::event> bk_pending;
+static std::vector<std::string> bk_classes;
+struct bk_rec { unsigned long long t0, t1; std::string cls; };
+static std::vector<bk_rec> bk_recs;
+static bool bk_prof_on() { return getenv("GGML_SYCL_BUCKET_PROFILE") != nullptr; }
+static void bk_profile_resolve() {
+    if (bk_pending.empty()) return;
+    bk_recs.reserve(bk_pending.size() / 2);
+    for (size_t k = 0; k + 1 < bk_pending.size(); k += 2) {
+        try {
+            const auto a = bk_pending[k].get_profiling_info<sycl::info::event_profiling::command_end>();
+            const auto b = bk_pending[k+1].get_profiling_info<sycl::info::event_profiling::command_start>();
+            bk_recs.push_back({(unsigned long long)a, (unsigned long long)b, bk_classes[k/2]});
+        } catch (...) {}
+    }
+    bk_pending.clear();
+    bk_classes.clear();
+    if (bk_recs.empty()) return;
+    const char * dump = getenv("GGML_SYCL_BUCKET_PROFILE_DUMP");
+    if (dump) {
+        std::map<std::string, std::pair<int64_t, int64_t>> agg;
+        for (const auto & r : bk_recs) {
+            auto & acc = agg[r.cls];
+            acc.first++;
+            acc.second += (r.t1 - r.t0) / 1000;
+        }
+        FILE * f = fopen(dump, "a");
+        if (f) {
+            fprintf(f, "# graph\n");
+            for (const auto & kv : agg) {
+                fprintf(f, "%s,%lld,%lld\n", kv.first.c_str(), (long long)kv.second.first, (long long)kv.second.second);
+            }
+            fclose(f);
+        }
+    }
+    bk_recs.clear();
+}
+static std::string bk_class_of(const ggml_tensor * node) {
+    if (node->op == GGML_OP_MUL_MAT) {
+        return std::string("MUL_MAT_") + ggml_type_name(node->src[0] ? node->src[0]->type : GGML_TYPE_F32);
+    }
+    return ggml_op_name(node->op);
+}
+
 static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
 
@@ -6876,11 +6924,21 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             continue;
         }
 
+        if (bk_prof_on()) {
+            queue_ptr bkq = sycl_ctx->stream();
+            bk_pending.push_back(bkq->single_task([]() {}));
+            bk_classes.push_back(bk_class_of(node));
+        }
         bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
         if (!ok) {
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+        if (bk_prof_on()) {
+            queue_ptr bkq = sycl_ctx->stream();
+            bk_pending.push_back(bkq->single_task([]() {}));
+            bk_classes.push_back("");  // end marker, class taken from k/2
+        }
         if (byte_census_on) {
             int64_t wb = 0, nb = 0;
             if (node->op == GGML_OP_MUL_MAT) {
@@ -6925,6 +6983,10 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
 
     if (mv_prof_on()) {
         mv_profile_resolve();
+    }
+
+    if (bk_prof_on()) {
+        bk_profile_resolve();
     }
 
     if (host_timer_on && host_timer_dump) {
