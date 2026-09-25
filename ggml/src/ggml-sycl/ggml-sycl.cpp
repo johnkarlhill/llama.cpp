@@ -6552,6 +6552,15 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
     std::string timer_key;
     std::chrono::steady_clock::time_point t_node;
 
+    // GGML_SYCL_HOST_TIMER=1: host-side submit cost per node (chrono around the
+    // dispatch call only, NO queue sync). Aggregated by op; dump via
+    // GGML_SYCL_HOST_TIMER_DUMP=<path> on graph completion. Sums across the
+    // graph = total host time spent submitting; compare against e2e ms/tok.
+    static const bool   host_timer_on   = getenv("GGML_SYCL_HOST_TIMER") != nullptr;
+    static const char * host_timer_dump = getenv("GGML_SYCL_HOST_TIMER_DUMP");
+    static std::map<std::string, std::pair<int64_t, int64_t>> host_accum;  // key -> {count, total_ns}
+    std::chrono::steady_clock::time_point t_host;
+
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         if (ggml_sycl_is_view_or_noop(node)) {
@@ -6567,8 +6576,17 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             t_node = std::chrono::steady_clock::now();
         }
 
+        if (host_timer_on) {
+            t_host = std::chrono::steady_clock::now();
+        }
         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);
         if (nodes_to_skip != 0) {
+            if (host_timer_on) {
+                auto & acc = host_accum["FUSE|" + std::string(ggml_op_name(node->op))];
+                acc.first++;
+                acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t_host).count();
+            }
             i += nodes_to_skip;
             continue;
         }
@@ -6672,6 +6690,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         if (node->op == GGML_OP_MUL_MAT) {
             const int ffn_skip = ggml_sycl_mul_mat_ffn_mmvq_fused(*sycl_ctx, cgraph, i);
             if (ffn_skip > 0) {
+                if (host_timer_on) {
+                    auto & acc = host_accum["FFNFUSED"];
+                    acc.first++;
+                    acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - t_host).count();
+                }
                 static int down_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
                 static long down_calls = 0;
                 const long dc = down_calls++;
@@ -6711,6 +6735,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         }
 
         if (node->op == GGML_OP_MUL_MAT && ggml_sycl_mul_mat_glu_mmvq_fused(*sycl_ctx, cgraph, i)) {
+            if (host_timer_on) {
+                auto & acc = host_accum["GLUFUSED"];
+                acc.first++;
+                acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t_host).count();
+            }
             i += 2;
             continue;
         }
@@ -6718,6 +6748,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         if (node->op == GGML_OP_MUL_MAT) {
             const int qkv_skip = ggml_sycl_mul_mat_qkv_mmvq_fused(*sycl_ctx, cgraph, i);
             if (qkv_skip > 0) {
+                if (host_timer_on) {
+                    auto & acc = host_accum["QKVFUSED"];
+                    acc.first++;
+                    acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - t_host).count();
+                }
                 i += qkv_skip;
                 continue;
             }
@@ -6734,6 +6770,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             queue_ptr stream = sycl_ctx->stream();
             SYCL_CHECK(CHECK_TRY_ERROR(
                 (*stream).memset(node->data, 0, ggml_nbytes(node)).wait()));
+            if (host_timer_on) {
+                auto & acc = host_accum["STUB|" + std::string(ggml_op_name(node->op))];
+                acc.first++;
+                acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t_host).count();
+            }
             continue;
         }
 
@@ -6742,6 +6784,12 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
         }
         GGML_ASSERT(ok);
+        if (host_timer_on) {
+            auto & acc = host_accum[std::string(ggml_op_name(node->op))];
+            acc.first++;
+            acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - t_host).count();
+        }
 
         if (node_timer_on) {
             // sync so wall time reflects kernel completion, not just enqueue
@@ -6759,6 +6807,16 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
         if (f.is_open()) {
             f << "# graph n_nodes=" << cgraph->n_nodes << "\n";
             for (const auto & kv : node_accum) {
+                f << kv.first << "," << kv.second.first << "," << kv.second.second << "\n";
+            }
+        }
+    }
+
+    if (host_timer_on && host_timer_dump) {
+        std::ofstream f(host_timer_dump, std::ios::app);
+        if (f.is_open()) {
+            f << "# graph n_nodes=" << cgraph->n_nodes << "\n";
+            for (const auto & kv : host_accum) {
                 f << kv.first << "," << kv.second.first << "," << kv.second.second << "\n";
             }
         }
