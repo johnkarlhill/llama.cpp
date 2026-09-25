@@ -6745,6 +6745,16 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
                     acc.second += (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - t_host).count();
                 }
+                if (byte_census_on) {
+                    int64_t wb = 0, nb = 0;
+                    for (int q = 0; q < ffn_skip; ++q) {
+                        const ggml_tensor * fn = cgraph->nodes[i + q];
+                        if (fn->op == GGML_OP_MUL_MAT && fn->src[0]) wb += ggml_nbytes(fn->src[0]);
+                        nb += ggml_nbytes(fn);
+                    }
+                    auto & acc = byte_accum["FFN_FUSED"];
+                    acc[0]++; acc[1] += wb; acc[2] += nb;
+                }
                 static int down_diag = []() { const char * e = getenv("GGML_SYCL_FFN_DIAG"); return e ? atoi(e) : 0; }();
                 static long down_calls = 0;
                 const long dc = down_calls++;
@@ -6871,6 +6881,16 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
             f << "# graph n_nodes=" << cgraph->n_nodes << "\n";
             for (const auto & kv : host_accum) {
                 f << kv.first << "," << kv.second.first << "," << kv.second.second << "\n";
+            }
+        }
+    }
+
+    if (byte_census_on && byte_census_dump) {
+        std::ofstream f(byte_census_dump, std::ios::app);
+        if (f.is_open()) {
+            f << "# graph n_nodes=" << cgraph->n_nodes << "\n";
+            for (const auto & kv : byte_accum) {
+                f << kv.first << "," << kv.second[0] << "," << kv.second[1] << "," << kv.second[2] << "\n";
             }
         }
     }
