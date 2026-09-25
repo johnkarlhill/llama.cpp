@@ -1973,38 +1973,43 @@ static __dpct_inline__ void mul_mat_vec_pq2_0_v17(
     const block_q8_1   * y = (const block_q8_1 *) vy;
 
     const int blocks_per_row = ncols / QK_PQ2_0;   // 40 for K=5120
-    const int bA = lane;                            // chunk A block (lanes 0..31)
-    const int bB = lane + WARP_SIZE;                // chunk B block (lanes 0..7)
+    // WARP_SIZE=16 build: three chunks cover blocks 0..47 (40 for K=5120):
+    // A=lane, B=lane+16, C=lane+32 (C only lanes 0..7 for 40 blocks).
+    const int bA = lane;
+    const int bB = lane + WARP_SIZE;
+    const int bC = lane + 2 * WARP_SIZE;
     const bool okA = bA < blocks_per_row;
     const bool okB = bB < blocks_per_row;
+    const bool okC = bC < blocks_per_row;
 
     const int ibxA = row * blocks_per_row + (okA ? bA : 0);
     const int ibxB = row * blocks_per_row + (okB ? bB : 0);
+    const int ibxC = row * blocks_per_row + (okC ? bC : 0);
     const int ibyA = (okA ? bA : 0) * (QK_PQ2_0 / QK8_1);
     const int ibyB = (okB ? bB : 0) * (QK_PQ2_0 / QK8_1);
+    const int ibyC = (okC ? bC : 0) * (QK_PQ2_0 / QK8_1);
 
-    // prefetch phase: both loads independent, issued back-to-back
-    const block_pq2_0 * pxB = &x[ibxB];
-    const block_q8_1  * pyB = &y[ibyB];
+    // prefetch phase: all loads independent, issued back-to-back before compute
     const block_pq2_0 * pxA = &x[ibxA];
     const block_q8_1  * pyA = &y[ibyA];
+    const block_pq2_0 * pxB = &x[ibxB];
+    const block_q8_1  * pyB = &y[ibyB];
+    const block_pq2_0 * pxC = &x[ibxC];
+    const block_q8_1  * pyC = &y[ibyC];
 
     float tmp = 0.0f;
 
-    // compute chunk B first (its loads were issued earliest)
-    if (okB) {
-        #pragma unroll
-        for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
-            tmp += vec_dot_pq2_0_q8_1_swar(pxB, pyB, c);
+    #define PQ2_V17_CHUNK(pb, pyb, okb) \
+        if (okb) { \
+            _Pragma("unroll") \
+            for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) { \
+                tmp += vec_dot_pq2_0_q8_1_swar(pb, pyb, c); \
+            } \
         }
-    }
-    // compute chunk A
-    if (okA) {
-        #pragma unroll
-        for (int c = 0; c < QK_PQ2_0 / QK8_1; ++c) {
-            tmp += vec_dot_pq2_0_q8_1_swar(pxA, pyA, c);
-        }
-    }
+    PQ2_V17_CHUNK(pxC, pyC, okC)
+    PQ2_V17_CHUNK(pxB, pyB, okB)
+    PQ2_V17_CHUNK(pxA, pyA, okA)
+    #undef PQ2_V17_CHUNK
 
     #pragma unroll
     for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
