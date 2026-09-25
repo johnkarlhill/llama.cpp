@@ -4872,6 +4872,20 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
     // asserts GGML_OP_MUL_MAT for the same reason.
     if (dst->op == GGML_OP_MUL_MAT && ggml_get_op_params_i32(dst, 1) == GGML_HINT_SRC0_IS_HADAMARD &&
         ggml_sycl_op_fwht(ctx, src1, dst)) {
+        // FWHT fold probe: log src0 identity (pointer) per call so we can
+        // verify whether fold matrices are shared across layers (same data
+        // pointer) or per-layer distinct (P6 round-6 rank-1 gate).
+        static const bool fwht_probe = getenv("GGML_SYCL_FWHT_PROBE") != nullptr;
+        if (fwht_probe) {
+            static std::ofstream * fwp = nullptr;
+            if (!fwp) {
+                const char * p = getenv("GGML_SYCL_FWHT_PROBE_DUMP");
+                fwp = new std::ofstream(p ? p : "fwht_probe.csv", std::ios::app);
+            }
+            (*fwp) << (const void *) src0->data << "," << (const void *) dst->data
+                   << "," << (int) src0->ne[0] << "," << (int) src0->ne[1] << ","
+                   << ggml_nbytes(src0) << "\n";
+        }
         return;
     }
 
